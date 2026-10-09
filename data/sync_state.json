@@ -1,0 +1,182 @@
+{
+ "sessions": {
+  "3c86afa4-c0ee-471f-a9d5-8a98dd919db5": {
+   "mtime": 1791528184.5727155,
+   "totals": {
+    "inputTokens": 50,
+    "outputTokens": 27914,
+    "cacheReadTokens": 1461432,
+    "cacheCreationTokens": 99878
+   },
+   "seq": 1,
+   "gen_after_ms": 1791524801638,
+   "created_at": 1791524801
+  },
+  "5a79dfd0-2688-46e5-8619-a045b2d09e02": {
+   "mtime": 1791523498.0171213,
+   "totals": {
+    "inputTokens": 348,
+    "outputTokens": 126,
+    "cacheReadTokens": 18242,
+    "cacheCreationTokens": 9
+   },
+   "seq": 1,
+   "gen_after_ms": 1791523009173,
+   "created_at": 1791523009
+  },
+  "bc3b2f34-68bb-4a7f-9c39-bf4085c86869": {
+   "mtime": 1791528184.5562541,
+   "totals": {
+    "inputTokens": 116,
+    "outputTokens": 47780,
+    "cacheReadTokens": 8732859,
+    "cacheCreationTokens": 224782
+   },
+   "seq": 1,
+   "gen_after_ms": 1791525115203,
+   "created_at": 1791525115
+  },
+  "ccdcc95b-403f-4d8a-ba6d-571bb1494ea8": {
+   "mtime": 1791528184.5489123,
+   "totals": {
+    "inputTokens": 421,
+    "outputTokens": 11438,
+    "cacheReadTokens": 690340,
+    "cacheCreationTokens": 59348
+   },
+   "seq": 1,
+   "gen_after_ms": 1791525166310,
+   "created_at": 1791526113
+  },
+  "ec15e93c-7abb-4c21-b7ba-124d12cd3609": {
+   "mtime": 1791528184.5860085,
+   "totals": {
+    "inputTokens": 4,
+    "outputTokens": 15,
+    "cacheReadTokens": 0,
+    "cacheCreationTokens": 18248
+   },
+   "seq": 1,
+   "gen_after_ms": 1791522795105,
+   "created_at": 1791522795
+  },
+  "f746a56d-3b29-43a9-b6b3-249edbe0eb4b": {
+   "mtime": 1791528184.579239,
+   "totals": {
+    "inputTokens": 22,
+    "outputTokens": 8156,
+    "cacheReadTokens": 277349,
+    "cacheCreationTokens": 46706
+   },
+   "seq": 1,
+   "gen_after_ms": 1791524589174,
+   "created_at": 1791524589
+  },
+  "fac170ca-33e5-4b14-a0ce-cd7f58f91a09": {
+   "mtime": 1791523536.66221,
+   "totals": {
+    "inputTokens": 1572,
+    "outputTokens": 155,
+    "cacheReadTokens": 5888,
+    "cacheCreationTokens": 10699
+   },
+   "seq": 1,
+   "gen_after_ms": 1791523205617,
+   "created_at": 1791523205
+  },
+  "fcd20150-cabc-46cb-a187-e05f25c6993d": {
+   "mtime": 1791528184.5632155,
+   "totals": {
+    "inputTokens": 62,
+    "outputTokens": 27193,
+    "cacheReadTokens": 2432142,
+    "cacheCreationTokens": 137839
+   },
+   "seq": 1,
+   "gen_after_ms": 1791524837163,
+   "created_at": 1791524837
+  },
+  "0d6aa612-28ff-422a-98ba-906504cc52f0": {
+   "mtime": 1791532168.9534566,
+   "totals": {
+    "inputTokens": 357,
+    "outputTokens": 675,
+    "cacheReadTokens": 36656,
+    "cacheCreationTokens": 352
+   },
+   "seq": 1,
+   "gen_after_ms": 1791532168943,
+   "created_at": 1791532168
+  },
+  "1691dfc1-4e19-41f4-bf76-17084f4c1f2c": {
+   "mtime": 1791551018.0013802,
+   "totals": {
+    "inputTokens": 702,
+    "outputTokens": 155466,
+    "cacheReadTokens": 17557305,
+    "cacheCreationTokens": 1712680
+   },
+   "seq": 55,
+   "gen_after_ms": 1791551017992,
+   "created_at": 1791551017
+  },
+  "3d9e8723-c5a8-4df3-b3b5-ef865b47e9f7": {
+   "mtime": 1791540087.058029,
+   "totals": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadTokens": 0,
+    "cacheCreationTokens": 0
+   },
+   "seq": 0,
+   "gen_after_ms": 0
+  },
+  "59f57fc1-a928-4414-8274-0fca6bc8665c": {
+   "mtime": 1791524119.2017343,
+   "totals": {
+    "inputTokens": 378,
+    "outputTokens": 14166,
+    "cacheReadTokens": 129188,
+    "cacheCreationTokens": 18550
+   },
+   "seq": 1,
+   "gen_after_ms": 1791524119193,
+   "created_at": 1791524119
+  },
+  "6e45425f-0d21-4393-8581-1672c5ff59a0": {
+   "mtime": 1791535497.2576978,
+   "totals": {
+    "inputTokens": 398,
+    "outputTokens": 6682,
+    "cacheReadTokens": 453036,
+    "cacheCreationTokens": 42869
+   },
+   "seq": 1,
+   "gen_after_ms": 1791535497246,
+   "created_at": 1791535497
+  },
+  "8933f01e-c950-47fe-9e3e-7ea144776d22": {
+   "mtime": 1791531982.2442653,
+   "totals": {
+    "inputTokens": 362,
+    "outputTokens": 1911,
+    "cacheReadTokens": 127438,
+    "cacheCreationTokens": 23143
+   },
+   "seq": 1,
+   "gen_after_ms": 1791531982234,
+   "created_at": 1791531982
+  },
+  "9e33570e-e7e3-41a9-8a57-ed7c3f4e883a": {
+   "mtime": 1791528193.2928617,
+   "totals": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadTokens": 0,
+    "cacheCreationTokens": 0
+   },
+   "seq": 0,
+   "gen_after_ms": 0
+  }
+ }
+}
