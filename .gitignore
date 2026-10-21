@@ -1,0 +1,5 @@
+/config.json
+/.config-*.tmp
+/data/
+__pycache__/
+*.py[cod]

@@ -1,0 +1,10 @@
+{
+  "ccSwitchExecutable": "",
+  "ccSwitchArguments": [],
+  "factoryApiKey": "",
+  "quotaRefreshSeconds": 60,
+  "ccSwitchDbPath": "",
+  "droidSessionsDir": "",
+  "droidLogsDir": "",
+  "startupTimeoutSeconds": 45
+}
