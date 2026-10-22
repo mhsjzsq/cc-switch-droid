@@ -7,7 +7,7 @@ import cdp
 import config
 import windows
 
-VERSION = "2.2.4"
+VERSION = "2.2.8"
 KEY = "__ccSwitchDroidHook"
 
 
@@ -22,6 +22,7 @@ class PageHook:
         self.instance_id = None
         self.ready = False
         self.failures = 0
+        self.last_commands = None
 
     def connect(self):
         if self.connection is None:
@@ -37,23 +38,37 @@ class PageHook:
             result = self.connection.call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
             self.script_id = result["identifier"]
         info = self.connection.evaluate(
-            f"window.{KEY} ? window.{KEY}.poll() : null"
+            f"typeof window.{KEY}?.poll === 'function' ? window.{KEY}.poll() : null"
         )
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or info.get("version") != VERSION:
             # Also handles a reload that raced the initial injection.
             self.connection.evaluate(source)
             self.last_payload = None
             self.ready = False
             return {}
+        commands = (info.get("instanceId"), info.get("syncNow", 0), info.get("refresh", 0))
+        previous = self.last_commands
+        new_refresh = bool(commands[2]) and (
+            previous is None or (commands[0], commands[2]) != (previous[0], previous[2])
+        )
         serialized = json.dumps(payload, ensure_ascii=False, allow_nan=False)
-        if (serialized != self.last_payload or info.get("refresh") or not self.ready
+        if (serialized != self.last_payload or new_refresh or not self.ready
                 or info.get("instanceId") != self.instance_id):
             self.connection.evaluate(f"window.{KEY} && window.{KEY}.setData({serialized})")
             self.last_payload = serialized
             self.instance_id = info.get("instanceId")
         self.ready = bool(info.get("ready")) and info.get("version") == VERSION
         self.failures = 0
-        return info
+        # poll() is non-destructive: a timeout during setData must not lose a
+        # user's request. Only acknowledge counters after a successful update.
+        output = dict(info)
+        output["syncNow"] = bool(commands[1]) and (previous is None or commands[:2] != previous[:2])
+        output["refresh"] = new_refresh
+        if self.ready:
+            self.last_commands = commands
+        else:
+            output["syncNow"] = output["refresh"] = False
+        return output
 
     def disconnect(self):
         # A receive timeout can interrupt a WebSocket frame. Drop the transport
@@ -101,7 +116,10 @@ class RendererHooks:
         )
         raw = raw.replace("__ADDON_VERSION__", VERSION)
         self.source = (
-            "(()=>{const install=()=>{" + raw + "};"
+            "(()=>{const install=()=>{"
+            "if(!(['http:','https:'].includes(location.protocol)&&location.hostname==='tauri.localhost'"
+            "||location.protocol==='tauri:'&&location.hostname==='localhost'))return;"
+            + raw + "};"
             "if(document.readyState==='loading'){"
             "document.addEventListener('DOMContentLoaded',install,{once:true});"
             "}else{install();}})();"
@@ -118,6 +136,7 @@ class RendererHooks:
         for target_id in list(self.pages):
             if target_id not in current:
                 self.pages.pop(target_id).close()
+                self.retry_after.pop(target_id, None)
         commands = {"ready": False, "sync": False, "quota": False}
         for target in targets:
             target_id = target["id"]
@@ -154,6 +173,10 @@ class RendererHooks:
         return commands
 
     def close(self):
+        try:
+            restore = self.child.poll() is None and windows.owns_debug_port(self.port, self.child.pid)
+        except (OSError, RuntimeError):
+            restore = False
         for page in self.pages.values():
-            page.close(restore=self.child.poll() is None)
+            page.close(restore=restore)
         self.pages.clear()

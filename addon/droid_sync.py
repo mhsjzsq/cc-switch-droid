@@ -12,9 +12,10 @@ import uuid
 from dataclasses import dataclass, field
 from concurrent.futures import CancelledError
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 
 import droid_timing
+import droid_models
 
 APP_TYPE = "droid"
 DATA_SOURCE = "droid_session"
@@ -29,6 +30,7 @@ RECORD_TABLE = "droid_addon_records"
 class SyncResult:
     inserted: int = 0
     timings_updated: int = 0
+    models_updated: int = 0
     warnings: list = field(default_factory=list)
 
 
@@ -82,8 +84,8 @@ def _counters(usage):
     values = []
     for key in FIELDS:
         value = usage[key]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"{key} 必须是非负整数")
+        if type(value) is not int or not 0 <= value <= 2**63 - 1:
+            raise ValueError(f"{key} 必须是 SQLite 可存储的非负整数")
         values.append(value)
     return tuple(values)
 
@@ -121,14 +123,14 @@ def _read_sources(sessions_dir, result, cancelled):
             result.warnings.append(f"跳过会话 {sid}：{e}")
             continue
         if sid not in sources:
-            sources[sid] = (path, totals, data.get("model"), time.time())
+            sources[sid] = (path, totals, time.time())
     for sid in duplicates:
         sources.pop(sid, None)
         result.warnings.append(f"跳过重复会话 ID：{sid}")
     return sources
 
 
-def _session_model(path, configured_model, cancelled):
+def _session_model(path, cancelled):
     """Only attribute counters when the entire transcript has one known model.
 
     Messages may have model IDs without token counts. Splitting cumulative
@@ -154,7 +156,8 @@ def _session_model(path, configured_model, cancelled):
                     if message.get("role") != "assistant":
                         continue
                     model = message.get("modelId")
-                    if isinstance(model, str) and model.strip():
+                    if (isinstance(model, str) and model.strip()
+                            and model.strip().lower() not in {"auto", "unknown", "default"}):
                         models.add(model.strip())
                     else:
                         complete = False
@@ -168,7 +171,9 @@ def _session_model(path, configured_model, cancelled):
         complete = False
     if len(models) > 1:
         return "Droid 混合模型", "mixed"
-    if complete and len(models) == 1 and isinstance(configured_model, str) and configured_model in models:
+    # The configured model is a current preference and may change after these
+    # messages were produced. A complete transcript is the stronger evidence.
+    if complete and len(models) == 1:
         return next(iter(models)), "single"
     return "Droid 未知模型", "unknown"
 
@@ -186,7 +191,7 @@ def load_pricing(conn):
     for row in rows:
         try:
             values = tuple(Decimal(str(v)) for v in row[1:])
-            if all(v.is_finite() and v >= 0 for v in values):
+            if all(v.is_finite() and v >= 0 and math.isfinite(float(v)) for v in values):
                 prices[row[0]] = values
         except InvalidOperation:
             continue
@@ -206,18 +211,28 @@ def _previous_snapshot(row, accounted):
         if (isinstance(observed, bool) or not isinstance(observed, (int, float))
                 or not math.isfinite(observed) or observed <= 0):
             return None
-        return observed if tuple(json.loads(totals)) == accounted else None
-    except (TypeError, ValueError, OverflowError):
+        datetime.fromtimestamp(observed)  # Reject timestamps unsupported on this platform.
+        values = json.loads(totals)
+        if (not isinstance(values, list) or len(values) != len(FIELDS)
+                or any(type(n) is not int or n < 0 for n in values)):
+            return None
+        return observed if tuple(values) == accounted else None
+    except (TypeError, ValueError, OverflowError, OSError):
         return None
 
 
 def _insert(conn, sid, delta, model, model_quality, time_quality, prices, now, sample_start):
     price = find_price(prices, model) if model_quality == "single" else None
     known = price is not None
-    costs = (
-        [Decimal(n) * p / Decimal(1_000_000) for n, p in zip(delta, price)]
-        if known else [Decimal(0)] * 4
-    )
+    costs = [Decimal(0)] * 4
+    if known:
+        try:
+            estimated = [Decimal(n) * p / Decimal(1_000_000) for n, p in zip(delta, price)]
+            if not math.isfinite(float(sum(estimated))):
+                raise ValueError("费用超出可显示范围")
+            costs = estimated
+        except (DecimalException, ValueError, OverflowError):
+            known = False
     notes = []
     if time_quality == "unallocated":
         notes.append("历史/补录汇总，日期未分配；记录时间为导入时间")
@@ -251,17 +266,24 @@ def _insert(conn, sid, delta, model, model_quality, time_quality, prices, now, s
     )
 
 
-def _imported_totals(conn):
-    sums = ",".join(f"COALESCE(SUM({c}),0)" for c in TOKEN_COLUMNS)
-    return {
-        row[0]: tuple(row[1:]) for row in conn.execute(
-            f"SELECT session_id,{sums} FROM proxy_request_logs"
-            " WHERE data_source=? GROUP BY session_id", (DATA_SOURCE,)
-        )
-    }
+def _imported_totals(conn, cancelled=None):
+    # SQLite SUM can overflow on duplicated/corrupt historic counters. Accumulate
+    # Python integers, and quarantine invalid sessions without blocking others.
+    totals = {}
+    for sid, *counts in conn.execute(
+        f"SELECT session_id,{','.join(TOKEN_COLUMNS)} FROM proxy_request_logs WHERE data_source=?",
+        (DATA_SOURCE,),
+    ):
+        _check_cancelled(cancelled)
+        old = totals.get(sid, (0, 0, 0, 0))
+        if old is None or any(type(n) is not int or n < 0 for n in counts):
+            totals[sid] = None
+        else:
+            totals[sid] = tuple(a + b for a, b in zip(old, counts))
+    return totals
 
 
-def sync(sessions_dir, db_path, *, cancelled=None, timings=()):
+def sync(sessions_dir, db_path, *, cancelled=None, timings=(), model_requests=()):
     _check_cancelled(cancelled)
     result = SyncResult()
     if not sessions_dir.is_dir():
@@ -274,28 +296,31 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=()):
     conn = connect(db_path)
     try:
         # Read large transcripts before taking SQLite's writer lock.
-        preliminary = _imported_totals(conn)
+        preliminary = _imported_totals(conn, cancelled)
         models = {}
-        for sid, (path, totals, configured_model, sampled_at) in sources.items():
+        for sid, (path, totals, sampled_at) in sources.items():
             _check_cancelled(cancelled)
             old = preliminary.get(sid, (0, 0, 0, 0))
-            if all(cur >= recorded for cur, recorded in zip(totals, old)) and totals != old:
-                models[sid] = _session_model(path.with_name(sid + ".jsonl"), configured_model, cancelled)
+            if old is not None and all(cur >= recorded for cur, recorded in zip(totals, old)) and totals != old:
+                models[sid] = _session_model(path.with_name(sid + ".jsonl"), cancelled)
         _check_cancelled(cancelled)
         conn.execute("BEGIN IMMEDIATE")
         _check_cancelled(cancelled)
         _ensure_schema(conn)
         # Re-read while holding the lock: another writer may have changed rows.
-        imported = _imported_totals(conn)
+        imported = _imported_totals(conn, cancelled)
         snapshots = {
             r[0]: r[1:] for r in conn.execute(
                 f"SELECT session_id,totals_json,observed_at FROM {SNAPSHOT_TABLE}"
             )
         }
         prices = load_pricing(conn)
-        for sid, (path, totals, configured_model, sampled_at) in sources.items():
+        for sid, (path, totals, sampled_at) in sources.items():
             _check_cancelled(cancelled)
             accounted = imported.get(sid, (0, 0, 0, 0))
+            if accounted is None:
+                result.warnings.append(f"会话 {sid} 的已导入 Token 数据无效，保留原记录并跳过该会话")
+                continue
             if any(cur < old for cur, old in zip(totals, accounted)):
                 result.warnings.append(
                     f"会话 {sid} 的累计值低于已导入值，可能回滚或旧版重复；保留原记录，等待核对"
@@ -310,6 +335,15 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=()):
                 )
                 quality = "observed" if bounded_today else "unallocated"
                 model, model_quality = models.get(sid, ("Droid 未知模型", "unknown"))
+                runtime_models = {
+                    r.model for r in model_requests if r.session_id == sid
+                    and r.ended_at <= sampled_at
+                    and (previous is None or previous < r.ended_at)
+                }
+                # Auxiliary calls can be billed without a transcript message.
+                # Never charge their aggregate entirely to the main model.
+                if len(runtime_models | ({model} if model_quality == "single" else set())) > 1:
+                    model, model_quality = "Droid 混合模型", "mixed"
                 _insert(conn, sid, delta, model, model_quality, quality, prices, sampled_at,
                         previous if previous is not None and previous <= sampled_at else None)
                 result.inserted += 1
@@ -318,6 +352,9 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=()):
                 " DO UPDATE SET totals_json=excluded.totals_json,observed_at=excluded.observed_at",
                 (sid, json.dumps(totals), sampled_at),
             )
+        result.models_updated = droid_models.repair(
+            conn, [r for r in model_requests if r.session_id in sources], RECORD_TABLE, cancelled,
+        )
         result.timings_updated, timing_warnings = droid_timing.enrich(
             conn, [r for r in timings if r.session_id in sources], cancelled,
             record_table=RECORD_TABLE,
@@ -361,11 +398,13 @@ def today_usage(db_path):
     finally:
         conn.close()
     records, inp, out, cr, cc, cost, unknown = row
+    valid_cost = math.isfinite(cost)
     return {
-        "available": True, "records": records, "input": inp, "output": out,
+        "available": True, "date": day.date().isoformat(), "records": records, "input": inp, "output": out,
         "cacheRead": cr, "cacheCreation": cc, "tokens": inp + out + cr + cc,
-        "cost": round(cost, 6) if unknown == 0 else None,
-        "knownCost": round(cost, 6), "unknownCostRecords": unknown,
+        "cost": round(cost, 6) if unknown == 0 and valid_cost else None,
+        "knownCost": round(cost, 6) if valid_cost else None, "unknownCostRecords": unknown,
+        "costError": None if valid_cost else "历史费用汇总超出可显示范围，请检查原版数据库记录",
         "unallocatedRecords": excluded[0], "unallocatedTokens": excluded[1],
     }
 
@@ -378,7 +417,7 @@ def remove_imported(db_path):
         count = conn.execute(
             "DELETE FROM proxy_request_logs WHERE data_source=?", (DATA_SOURCE,)
         ).rowcount
-        for table in (SNAPSHOT_TABLE, RECORD_TABLE, droid_timing.TABLE):
+        for table in (SNAPSHOT_TABLE, RECORD_TABLE, droid_timing.TABLE, droid_models.TABLE):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.commit()
         return count

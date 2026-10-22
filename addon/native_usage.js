@@ -1,10 +1,43 @@
-// This factory is bundled inside renderer.py's per-page install closure.
-// Read native component props and call their existing selection callbacks.
-// Never write React state/Fibers, render a component, or open a menu.
-function createNativeUsageBridge({ droidProvider, droidLabel }) {
-  const allLabel = /^(全部|所有|All|全部供应商|所有供应商|全部供應商|所有供應商|全部来源|所有来源|全部來源|所有來源|All providers|All sources)$/i;
-  const isDroidValue = (value) => value === droidProvider || value === 'v:' + droidProvider;
+// Bundled inside renderer.py's per-page install closure.
+function createUsageNotifier({ invoke, changed, now = Date.now }) {
+  let revision = 0;
+  let delivered = 0;
+  let pending = false;
+  let retryAt = 0;
+  let stopped = false;
+  let error = null;
+  async function flush() {
+    if (stopped || pending || revision <= delivered || now() < retryAt) return;
+    pending = true;
+    const sending = revision;
+    try {
+      // Same event used by CC Switch's own usage writers and query caches.
+      await invoke('plugin:event|emit', { event: 'usage-log-recorded', payload: null });
+      delivered = sending;
+      error = null;
+    } catch (_) {
+      error = '用量已写入，但原版统计刷新失败；正在重试，可切换统计范围重新读取。';
+      retryAt = now() + 5000;
+    } finally {
+      pending = false;
+      if (!stopped) changed();
+    }
+  }
+  return {
+    update(value) {
+      if (Number.isSafeInteger(value) && value >= 0) revision = Math.max(revision, value);
+      void flush();
+    },
+    flush,
+    get error() { return error; },
+    close() { stopped = true; },
+  };
+}
 
+// Resolve the dashboard's own state setters from the committed React tree.
+// Range object identity and the native app group anchor the state layout;
+// never guess a hook index, modify Fiber fields, or patch native requests.
+function createNativeUsageBridge() {
   function committedPath(element) {
     if (!element?.isConnected) return null;
     const key = Object.keys(element).find((name) => name.startsWith('__reactFiber$'));
@@ -49,87 +82,80 @@ function createNativeUsageBridge({ droidProvider, droidLabel }) {
     }
     return stack.length ? [] : found;
   }
+  const presets = new Set(['today', '1d', '7d', '14d', '30d', 'all', 'custom']);
+  const optionalString = (value) => value === undefined || typeof value === 'string';
 
-  function label(props) {
-    const parts = [props.title, props['aria-label']];
-    const stack = [props.children];
-    for (let count = 0; stack.length && count < 200; count++) {
-      const node = stack.pop();
-      if (typeof node === 'string' || typeof node === 'number') parts.push(String(node));
-      else if (Array.isArray(node)) stack.push(...node);
-      else if (node?.props) stack.push(node.props.children);
+  function stateHooks(fiber) {
+    const hooks = [];
+    const visited = new Set();
+    for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+      if (visited.has(hook) || hooks.length >= 512) return [];
+      visited.add(hook);
+      hooks.push(hook);
     }
-    return parts.filter((part) => typeof part === 'string').map((part) => part.trim());
+    return hooks;
   }
 
-  function optionKind(props) {
-    if (props.disabled || props['aria-disabled'] === true || props['aria-disabled'] === 'true') return null;
-    if (typeof props.value === 'string') {
-      if (isDroidValue(props.value)) return 'droid';
-      // An encoded provider named "all" is not the clear-filter sentinel.
-      return props.value === 'all' ? 'all' : null;
-    }
-    const labels = label(props);
-    if (labels.some((text) => text === droidProvider || text === droidLabel)) return 'droid';
-    return labels.some((text) => allLabel.test(text)) ? 'all' : null;
-  }
-
-  function valueBinding(props) {
-    if (typeof props?.onValueChange !== 'function' || typeof props.value !== 'string') return null;
-    const options = childProps(props.children);
-    const values = { droid: new Set(), all: new Set() };
-    for (const option of options) {
-      const kind = optionKind(option);
-      if (kind && typeof option.value === 'string') values[kind].add(option.value);
-    }
-    if (values.all.size !== 1 || values.droid.size > 1) return null;
-    const all = [...values.all][0];
-    const droid = [...values.droid][0];
+  function dashboardBinding(fiber, groupProps) {
+    // UsageDashboard returns a host div containing the filter row and body.
+    // Inspect its original React element props, including closed menus.
+    const elements = childProps(fiber.child?.memoizedProps?.children);
+    if (!elements.includes(groupProps)) return null;
+    const ranges = elements.filter((props) => presets.has(props.selection?.preset)
+      && typeof props.onApply === 'function' && typeof props.triggerLabel === 'string');
+    if (ranges.length !== 1) return null;
+    const buttons = childProps(groupProps.children).filter((props) => (
+      typeof props['aria-pressed'] === 'boolean' && typeof props.onClick === 'function'
+    ));
+    const apps = buttons.map((props) => ({
+      value: props['aria-label']
+        ? childProps(props.children).find((child) => typeof child.app === 'string')?.app
+        : 'all',
+      selected: props['aria-pressed'],
+    }));
+    if (apps.length < 2 || apps.some((app) => !app.value)
+        || apps.filter((app) => app.value === 'all').length !== 1) return null;
+    const hooks = stateHooks(fiber);
+    const index = hooks.findIndex((hook) => hook.memoizedState === ranges[0].selection);
+    if (index < 0) return null;
+    // Native order: range, app, provider, model, status. Validate every slot
+    // and the rendered selection before using the three existing setters.
+    const slots = hooks.slice(index, index + 5);
+    if (slots.length !== 5) return null;
+    const reducer = slots[0].queue?.lastRenderedReducer;
+    if (typeof reducer !== 'function' || slots.some((hook) => (
+      typeof hook.queue?.dispatch !== 'function' || hook.queue.lastRenderedReducer !== reducer
+    ))) return null;
+    const [, app, provider, model, status] = slots;
+    const value = app.memoizedState;
+    const selected = apps.filter((item) => item.selected);
+    const selectionMatches = value === 'droid' ? selected.length === 0
+      : selected.length === 1 && selected[0].value === value;
+    if (!selectionMatches) return null;
+    if (!optionalString(provider.memoizedState) || !optionalString(model.memoizedState)
+        || !(status.memoizedState === undefined || Number.isInteger(status.memoizedState))) return null;
     return {
-      selected: isDroidValue(props.value),
-      available: (wantOn) => !wantOn || droid !== undefined,
-      choose: (wantOn) => props.onValueChange(wantOn ? droid : all),
-    };
-  }
-
-  function actionBinding(props) {
-    const actions = { droid: new Set(), all: new Set() };
-    for (const option of childProps(props?.children)) {
-      const kind = optionKind(option);
-      if (kind && typeof option.onSelect === 'function') actions[kind].add(option.onSelect);
-    }
-    if (actions.all.size !== 1 || actions.droid.size > 1) return null;
-    return {
-      selected: null, // The trigger's native label provides state for plain items.
-      available: (wantOn) => !wantOn || actions.droid.size === 1,
-      choose: (wantOn) => {
-        const action = [...actions[wantOn ? 'droid' : 'all']][0];
-        // Radix onSelect receives a cancellable Event; it is never dispatched.
-        action(new Event('droid-hook-select', { cancelable: true }));
+      selected: value === 'droid',
+      choose() {
+        // Same transition as native changeAppType: preserve date/status,
+        // clear provider/model only when changing to another application.
+        app.queue.dispatch('droid');
+        if (value !== 'droid') {
+          provider.queue.dispatch(undefined);
+          model.queue.dispatch(undefined);
+        }
       },
     };
   }
 
-  function resolve(trigger, boundary) {
-    if (!trigger?.isConnected || !boundary?.contains(trigger)) return null;
-    const path = committedPath(trigger);
+  function resolve(group) {
+    const path = committedPath(group);
     if (!path) return null;
-    const stop = path.findIndex((fiber) => fiber.stateNode === boundary);
-    if (stop < 0) return null;
-    let actionFallback = null;
-    for (const fiber of path.slice(0, stop)) {
-      const props = fiber.memoizedProps;
-      if (!props || typeof props !== 'object') continue;
-      const direct = valueBinding(props);
-      if (direct) return direct;
-      // Closed DropdownMenu content is not mounted, but its element props are
-      // still children of the owning root. Read them without rendering/opening.
-      const groups = childProps(props.children).map(valueBinding).filter(Boolean);
-      if (groups.length === 1) return groups[0];
-      if (groups.length > 1) return null;
-      actionFallback = actionBinding(props) || actionFallback;
-    }
-    return actionFallback;
+    const groupProps = path[0].memoizedProps;
+    if (groupProps?.role !== 'group') return null;
+    const matches = path.slice(1).filter((fiber) => typeof fiber.type === 'function')
+      .map((fiber) => dashboardBinding(fiber, groupProps)).filter(Boolean);
+    return matches.length === 1 ? matches[0] : null;
   }
 
   return { resolve };

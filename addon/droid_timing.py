@@ -135,19 +135,21 @@ def read_file(path, cancelled):
 class TimingReader:
     """Cache parsed rotations by file metadata; keep no prompts or credentials."""
 
-    def __init__(self):
+    def __init__(self, parser=read_file, label="速度"):
         self.files = {}
+        self.parser = parser
+        self.label = label
 
     def read(self, directory, cancelled=None):
         check_cancelled(cancelled)
         try:
             if not directory.is_dir():
                 self.files.clear()
-                return [], ["Droid 速度数据不可用：本地运行日志目录不存在"]
+                return [], [f"Droid {self.label}数据不可用：本地运行日志目录不存在"]
             paths = sorted(path for path in directory.glob("droid-log-single.log*") if path.is_file())
         except OSError:
             self.files.clear()
-            return [], ["Droid 速度数据暂不可用：本地运行日志目录无法读取"]
+            return [], [f"Droid {self.label}数据暂不可用：本地运行日志目录无法读取"]
         self.files = {path: entry for path, entry in self.files.items() if path in paths}
         requests = {}
         conflicts = set()
@@ -159,7 +161,7 @@ class TimingReader:
                 signature = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
                 cached = self.files.get(path)
                 if cached is None or cached[0] != signature:
-                    cached = (signature, read_file(path, cancelled))
+                    cached = (signature, self.parser(path, cancelled))
                     self.files[path] = cached
                 for request in cached[1]:
                     old = requests.get(request.evidence_id)
@@ -168,17 +170,17 @@ class TimingReader:
                     requests[request.evidence_id] = request
             except OSError:
                 self.files.pop(path, None)
-                warnings.append(f"Droid 速度数据暂不可读：{path.name}")
+                warnings.append(f"Droid {self.label}数据暂不可读：{path.name}")
         return [r for key, r in requests.items() if key not in conflicts], warnings
 
 
-def within_sample(request, created_at, sample_start, sample_end):
-    if sample_start is not None and sample_end is not None:
-        # Only consider a request that completed inside this delta's observed
-        # interval. Equal token tuples in neighboring intervals are not proof.
-        return sample_start < request.ended_at <= sample_end
-    # Older rows have only second-resolution import timestamps.
-    return -1 < created_at - request.ended_at <= 120
+def within_sample(request, sample_start, sample_end):
+    # Import time alone is not a sampling boundary (initial/legacy imports can
+    # contain days of history). Never guess a two-minute window for these rows.
+    return (
+        all(type(value) in (int, float) and math.isfinite(value) for value in (sample_start, sample_end))
+        and sample_start < request.ended_at <= sample_end
+    )
 
 
 def enrich(conn, requests, cancelled=None, *, record_table):
@@ -204,8 +206,8 @@ def enrich(conn, requests, cancelled=None, *, record_table):
         candidates[(request.session_id, request.tokens)].append(request)
     # record_table is the sync module's schema constant, never a config value.
     rows = conn.execute(f"""SELECT p.request_id,p.session_id,p.input_tokens,p.output_tokens,
-        p.cache_read_tokens,p.cache_creation_tokens,p.created_at,p.request_model,
-        m.sample_start,m.sample_end
+        p.cache_read_tokens,p.cache_creation_tokens,p.request_model,
+        m.sample_start,m.sample_end,m.model_quality
         FROM proxy_request_logs p LEFT JOIN {record_table} m USING(request_id)
         WHERE p.data_source='droid_session'
         AND COALESCE(p.latency_ms,0)=0 AND COALESCE(p.first_token_ms,0)=0
@@ -215,11 +217,13 @@ def enrich(conn, requests, cancelled=None, *, record_table):
     for row in rows:
         check_cancelled(cancelled)
         possible = [request for request in candidates.get((row[1], tuple(row[2:6])), ())
-                    if within_sample(request, row[6], row[8], row[9])
-                    and (not row[7] or row[7].startswith("Droid ") or row[7] == request.model)]
+                    if within_sample(request, row[7], row[8])
+                    and row[9] == "single" and row[6] and row[6] == request.model]
+        # A request that also fits an ambiguous row is not uniquely owned.
+        for request in possible:
+            owners[request.evidence_id].append(row[0])
         if len(possible) == 1 and possible[0].evidence_id not in used:
             matches[row[0]] = possible[0]
-            owners[possible[0].evidence_id].append(row[0])
     count = 0
     for request_id, request in matches.items():
         check_cancelled(cancelled)

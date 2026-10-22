@@ -1,13 +1,16 @@
 """Usage and quota jobs scoped to one CC Switch launch, independent of the UI."""
 
 import json
+import sqlite3
 import threading
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+from datetime import datetime
 
 import config
 import droid_sync
 import droid_timing
+import droid_models
 import factory_quota
 
 
@@ -25,6 +28,7 @@ class DataService:
         self.last_key = None
         self.auth_cache = {}
         self.timing_reader = droid_timing.TimingReader()
+        self.model_reader = droid_models.ModelReader()
         self.quota = {}
         self.today = {}
         self.warnings = []
@@ -36,6 +40,11 @@ class DataService:
         self.sync_requested = False
         self.quota_requested = False
         self.closed = False
+        self.usage_revision = 0
+        self.auto_sync = False
+        self.scan_interval = 60
+        self.next_settings = 0
+        self.settings_error = None
 
     def cancelled(self):
         return self.stop.is_set() or not self.client_alive()
@@ -44,14 +53,33 @@ class DataService:
         cfg = self.cfg if cfg is None else cfg
         return str(config.db_path(cfg)), str(config.sessions_dir(cfg)), str(config.logs_dir(cfg))
 
-    def sync_interval(self):
+    def _reload_scan_settings(self):
+        now = time.monotonic()
+        if now < self.next_settings:
+            return
+        self.next_settings = now + 2
         try:
-            settings = config.db_path(self.cfg).parent / "settings.json"
-            value = json.loads(settings.read_text(encoding="utf-8-sig"))
-            milliseconds = int(value.get("usageDashboardRefreshIntervalMs") or 0)
-            return max(2, milliseconds / 1000) if milliseconds > 0 else 60
-        except (OSError, ValueError, TypeError, AttributeError):
-            return 60
+            try:
+                value = json.loads(config.native_settings_path().read_text(encoding="utf-8-sig"))
+            except FileNotFoundError:
+                value = {}
+            if not isinstance(value, dict):
+                raise ValueError("原版设置必须是对象")
+            enabled = value.get("sessionAutoSyncEnabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError("自动扫描开关必须是布尔值")
+            milliseconds = value.get("usageDashboardRefreshIntervalMs")
+            interval = (
+                max(2, milliseconds / 1000)
+                if type(milliseconds) is int and 0 < milliseconds <= 86_400_000 else 60
+            )
+            if enabled and (not self.auto_sync or interval != self.scan_interval):
+                self.next_sync = 0
+            self.auto_sync, self.scan_interval = enabled, interval
+            self.settings_error = None
+        except (OSError, ValueError):
+            self.auto_sync = False
+            self.settings_error = "原版扫描设置读取失败，已暂停自动扫描；仍可手动同步"
 
     def request(self, *, sync=False, quota=False):
         if sync:
@@ -61,17 +89,25 @@ class DataService:
 
     def _sync(self, cfg):
         timings, timing_warnings = self.timing_reader.read(config.logs_dir(cfg), self.cancelled)
+        models, model_warnings = self.model_reader.read(config.logs_dir(cfg), self.cancelled)
         result = droid_sync.sync(
-            config.sessions_dir(cfg), config.db_path(cfg), cancelled=self.cancelled, timings=timings
+            config.sessions_dir(cfg), config.db_path(cfg), cancelled=self.cancelled,
+            timings=timings, model_requests=models,
         )
         result.warnings.extend(timing_warnings)
+        result.warnings.extend(model_warnings)
         if self.cancelled():
             raise CancelledError()
-        today = (
-            droid_sync.today_usage(config.db_path(cfg))
-            if config.db_path(cfg).is_file()
-            else {"available": False, "error": "CC Switch 数据库不存在"}
-        )
+        try:
+            today = (
+                droid_sync.today_usage(config.db_path(cfg))
+                if config.db_path(cfg).is_file()
+                else {"available": False, "error": "CC Switch 数据库不存在"}
+            )
+        except (OSError, ValueError, sqlite3.Error, OverflowError):
+            # Import has already committed. Preserve its result/revision even
+            # if a damaged historical aggregate cannot be displayed.
+            today = {"available": False, "error": "今日汇总读取失败，已完成的用量写入保留，请检查数据库"}
         return result, today
 
     def _quota(self, key, cache):
@@ -113,17 +149,21 @@ class DataService:
                 try:
                     result, self.today = job.result()
                     self.warnings = result.warnings
+                    if result.inserted or result.timings_updated or result.models_updated:
+                        self.usage_revision += 1
                     if result.inserted:
                         self.state.log("usage_imported", records=result.inserted)
                     if result.timings_updated:
                         self.state.log("usage_timings_updated", records=result.timings_updated)
+                    if result.models_updated:
+                        self.state.log("usage_models_updated", records=result.models_updated)
                 except CancelledError:
                     return
                 except Exception as error:
                     self.warnings = [f"同步失败：{error}"]
                     self.today = {"available": False, "error": "同步未完成，旧数值暂不展示"}
                     self.state.log("sync_failed", reason=str(error))
-                self.next_sync = time.monotonic() + self.sync_interval()
+                self.next_sync = time.monotonic() + self.scan_interval
         if self.quota_job is not None and self.quota_job.done():
             job, key = self.quota_job, self.quota_key
             self.quota_job = None
@@ -147,13 +187,14 @@ class DataService:
         if self.closed or self.cancelled():
             return
         self._reload()
+        self._reload_scan_settings()
         try:
             key = factory_quota.resolve_api_key(self.cfg["factoryApiKey"])
             self.key_error = None
         except (OSError, ValueError, factory_quota.QuotaError):
             # Credential-file errors must not stop local usage synchronization.
             key = ""
-            self.key_error = "Factory 凭据文件读取失败，请检查 ~/.factory/.env 或 config.json"
+            self.key_error = "Factory 凭据读取失败或格式无效，请检查环境变量、~/.factory/.env 或 config.json"
         if key != self.last_key:
             self.last_key = key
             self.auth_cache = {}
@@ -161,7 +202,7 @@ class DataService:
             self.next_quota = 0
         self._collect()
         now = time.monotonic()
-        if self.sync_job is None and (self.sync_requested or now >= self.next_sync):
+        if self.sync_job is None and (self.sync_requested or (self.auto_sync and now >= self.next_sync)):
             self.sync_requested = False
             self.sync_signature = self.signature()
             self.sync_job = self.worker.submit(self._sync, dict(self.cfg))
@@ -179,9 +220,17 @@ class DataService:
             warnings.insert(0, self.config_error)
         if self.key_error:
             warnings.insert(0, self.key_error)
+        if self.settings_error:
+            warnings.insert(0, self.settings_error)
+        today = self.today
+        if today.get("date") and today["date"] != datetime.now().date().isoformat():
+            today = {"available": False, "error": "日期已变化，请等待或手动同步今日用量"}
+        elif not today and not self.auto_sync:
+            today = {"available": False, "error": "自动扫描已暂停，请在用量统计页点击立即同步"}
         return {
             "configured": bool(self.last_key), "configPath": str(config.CONFIG_PATH),
-            "quota": self.quota, "today": self.today, "syncWarnings": warnings,
+            "quota": self.quota, "today": today, "syncWarnings": warnings,
+            "usageRevision": self.usage_revision,
             "refreshing": self.quota_job is not None and self.quota_key == self.last_key,
         }
 

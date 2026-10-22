@@ -6,7 +6,7 @@ A Windows extension that adds a Droid page, Factory quota information, and local
 
 Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for that session. The project includes a Python runtime and does not require a system Python installation or the old Addon directory.
 
-**Current version: 2.2.4** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
+**Current version: 2.2.8** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
 
 ## Features
 
@@ -17,7 +17,7 @@ Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for tha
 - **First-run setup**: Select the CC Switch directory, enter a Factory API key, and continue launching after saving.
 - **Settings backup**: Save a copy of CC Switch's device settings before launch and stop if the JSON is damaged.
 
-The current integration uses CC Switch 4.0.12 as its compatibility reference. It depends on the application's interface and database structure, so other versions may require changes. See the [changelog](CHANGELOG.md) for the validation scope of recent changes.
+The current integration uses CC Switch 4.0.12 as its compatibility reference, with the app-filter adapter updated and checked offline against the 4.0.17 source. It depends on the application's interface and database structure, so other versions may require changes. See the [changelog](CHANGELOG.md) for the validation scope of recent changes.
 
 ## Quick start
 
@@ -78,19 +78,21 @@ Droid usage synchronization and Factory quota queries run as separate tasks.
 
 | Action or setting | Current behavior |
 | --- | --- |
-| Launch and connect the Hook | Run an initial Droid usage sync. |
-| CC Switch's “Scan every N seconds” setting | Read `usageDashboardRefreshIntervalMs` from `settings.json` next to the selected database. Missing or invalid values fall back to 60 seconds; the minimum is 2 seconds. |
-| “Sync now” in the page header | Also request a Droid sync. |
+| Launch and connect the Hook | Run an initial Droid usage sync when native automatic scanning is enabled. |
+| Native automatic scanning toggle | Follow `sessionAutoSyncEnabled`; disabling it stops scheduling automatic scans while keeping manual sync available. |
+| CC Switch's “Scan every N seconds” setting | Read `usageDashboardRefreshIntervalMs` from `~/.cc-switch/settings.json`, independently of the database directory. Missing, invalid, or longer-than-one-day intervals fall back to 60 seconds; the minimum is 2 seconds. |
+| “Sync now” in the header, empty state, or data sources dialog | Also request a Droid sync. |
 | “Refresh now” on the Droid page | Refresh Factory quota information. |
 | `quotaRefreshSeconds` | Control quota queries only, independently of the native scanning dropdown. |
 
-Droid reads the interval after a sync finishes and then schedules the next one. Slow sync jobs do not overlap. Changing the native interval does not immediately reschedule a job that is already waiting.
+Droid schedules the next scan after the previous one finishes; slow jobs do not overlap. Scan preferences are reread approximately every 2 seconds. Re-enabling automatic scanning or changing its interval requests a scan once idle. Disabling the toggle does not interrupt an in-flight scan. Unreadable native settings pause automatic scanning with a warning; manual sync remains available.
 
 Current differences from native scanning:
 
-- Droid does not yet follow the native automatic scanning toggle. Switching pages or hiding the window does not pause its scheduled scans.
-- With a custom database directory, the interval falls back to the default if the native settings file is not present beside the database.
-- Writing usage to the database and refreshing the native dashboard are separate operations, so new records may appear later.
+- While automatic scanning is enabled, switching pages or hiding the window does not pause Droid scans.
+- After importing usage or filling timing fields, the Hook emits the native `usage-log-recorded` event to refresh statistics. Failed notifications are retried and reported on the Droid page.
+
+The usage dashboard's Droid icon uses the same app-filter state as native app buttons (`appType=droid`). Switching apps clears provider and model filters while preserving the date range and status code. Selecting Droid again preserves its current filters. Empty ranges remain selectable and use the native empty-list or zero-value display. Changing dates keeps Droid selected; All and other app buttons switch normally. Selection no longer depends on a Droid provider-menu option.
 
 ## Statistics and limitations
 
@@ -98,6 +100,7 @@ Current differences from native scanning:
 
 - **Usage consistency**: Compare cumulative counts against previously imported totals and save usage changes and sampling information in one transaction. Decreasing counters, duplicate session IDs, or incomplete reads are skipped or reported.
 - **Date attribution**: Initial imports, changes spanning multiple days, and imports without reliable sampling boundaries are marked as having an unallocated date. The Droid page's daily totals only include changes whose two samples fall within the current day.
+- **Model identification**: Prefer actual transcript model IDs over later configuration changes. Missing assistant messages can be supplemented by a uniquely matched completed request within a trusted sample, explicitly labeled as inferred. Without per-request token evidence, costs and timings are not backfilled. Aggregates involving multiple models remain mixed rather than assigning all tokens to the main model.
 - **Cost attribution**: Estimate costs only when model evidence is complete and the database contains an exact pricing match. Other costs remain unknown. Sessions using multiple models are not assigned entirely to the last model.
 - **Native totals**: The native dashboard does not understand all Droid attribution metadata. A cost of `0` can be a placeholder for an unknown cost, and records with unallocated dates use the import time. Consult the statistics notes on the Droid page when interpreting daily usage.
 - **Historical data**: Existing records from older versions keep their values. Changing the launch method does not automatically correct them.
@@ -107,7 +110,7 @@ Current differences from native scanning:
 
 The Hook reads total request duration, time to first token, successful message IDs, and final token usage from `droid-log-single.log` and its rotated files. It fills timing fields only when the session, all four token counts, known model, and sampling time uniquely match a request.
 
-No new timing data is added for combined requests, missing logs, retries, provider rotation, or ambiguous matches. Existing timing values are not automatically overwritten.
+No new timing data is added for combined requests, missing logs, retries, provider rotation, unknown or mixed models, missing sampling boundaries, or ambiguous matches. Initial and legacy imports are not matched merely because their import timestamp is close to a request. Existing timing values are not automatically overwritten.
 
 In CC Switch 4.0.12, Droid is treated as a session log source and uses this display formula:
 
@@ -141,7 +144,7 @@ Before launch, the helper copies CC Switch's `~/.cc-switch/settings.json` into t
 
 This protection does not automatically repair or restore settings, or intercept settings writes while CC Switch is running. Backups can contain account or synchronization settings and should be kept private.
 
-Usage synchronization stores `droid_session` records and the `droid_addon_snapshots`, `droid_addon_records`, and `droid_hook_timings` tables in the CC Switch database. These are persistent statistics, separate from the project's `data/` log directory.
+Usage synchronization stores `droid_session` records and the `droid_addon_snapshots`, `droid_addon_records`, `droid_hook_timings`, and `droid_hook_models` tables in the CC Switch database. These are persistent statistics, separate from the project's `data/` log directory.
 
 ## Migrating from the old Addon
 

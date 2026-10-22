@@ -21,7 +21,11 @@
     'openclaw', 'hermes', 'pi', 'pi coding agent', 'minimax code', 'mcode',
   ]);
 
-  const state = { data: null, active: false, refreshRequested: false, refreshing: false };
+  const state = { data: null, active: false, refreshRequested: 0, syncRequested: 0, refreshing: false };
+  const usageNotifier = createUsageNotifier({
+    invoke: (command, args) => window.__TAURI_INTERNALS__.invoke(command, args),
+    changed: () => render(),
+  });
   let navBtn = null;
   let headerEl = null;
   let bodyEl = null;
@@ -43,6 +47,7 @@
 
   const CSS = `
   .da-layer{position:absolute;z-index:40;background:var(--bg-app);color:var(--text-1);box-sizing:border-box}
+  .da-nav-fallback{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px;padding:0 12px;border-radius:8px;text-align:left;font-size:13px;color:var(--text-2)}
   .da-head{top:0;left:0;display:flex;align-items:center;gap:10px;padding:0 16px 0 24px;border-bottom:1px solid hsl(var(--border))}
   .da-head .da-title{font-size:17px;font-weight:600;white-space:nowrap}
   .da-head .da-sub{font-size:12px;color:var(--text-3);white-space:nowrap}
@@ -81,20 +86,18 @@
   .da-guide dt{font-size:12px;font-weight:600;color:var(--text-1)}
   .da-guide dd{margin:3px 0 0;font-size:12px;line-height:1.65;color:var(--text-2)}
   .da-guide-note{margin:0;padding:0 16px 16px;font-size:11px;line-height:1.6;color:var(--text-3)}
-  [data-da-on]>span[aria-hidden="true"]{opacity:0}
-  [data-da-on]>button[aria-pressed="true"]:not(.da-filter){font-weight:500;color:var(--text-2)}
-  .da-filter[aria-pressed="true"]{background:var(--bg-card);box-shadow:var(--shadow-sm);color:var(--text-1)}
-  .da-filter{color:var(--text-2)}
+  .da-filter[aria-pressed="true"]{color:var(--text-1);font-weight:600}
+  .da-filter{position:relative;font-weight:500;color:var(--text-2)}
   .da-filter:hover{color:var(--text-1)}
   span[data-da-app]::before{content:"";flex:none;width:14px;height:14px;margin:0 1px;background-color:currentColor;-webkit-mask:var(--da-icon) center/contain no-repeat;mask:var(--da-icon) center/contain no-repeat}
-  .da-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:200;background:var(--inverse-bg);color:var(--inverse-fg);padding:8px 14px;border-radius:8px;font-size:13px;box-shadow:var(--shadow-md)}
+  .da-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:200;width:max-content;max-width:min(560px,calc(100vw - 32px));box-sizing:border-box;overflow-wrap:anywhere;background:var(--inverse-bg);color:var(--inverse-fg);padding:8px 14px;border-radius:8px;font-size:13px;line-height:1.6;box-shadow:var(--shadow-md)}
   `;
 
   function nav() {
     // A popup can also contain a nav element. Identify the application sidebar
     // by its native app entries instead of taking the first nav in the page.
     return [...document.querySelectorAll('nav')].find((element) => (
-      [...element.querySelectorAll('[role="group"]')].some((group) => nativeButtons(group).some(isAppButton))
+      [...element.querySelectorAll('[role="group"]')].some(isAppsGroup)
     )) || null;
   }
   function mainArea() { return document.getElementById('content-area') || document.querySelector('main'); }
@@ -118,13 +121,19 @@
     ));
   }
 
+  function isAppsGroup(group) {
+    // The native group remains present when every application is hidden.
+    return /^(Apps|Applications|应用|應用|应用程序|應用程式)$/i.test(group.getAttribute('aria-label') || '')
+      || nativeButtons(group).some(isAppButton);
+  }
+
   function appsGroup() {
     const n = nav();
     if (!n) return null;
     // Restrict the match to native app buttons inside the navigation. Utility
     // groups (MCP, settings, etc.) and our own Droid button cannot match.
     return [...n.querySelectorAll('[role="group"]')]
-      .find((group) => nativeButtons(group).some(isAppButton)) || null;
+      .find(isAppsGroup) || null;
   }
 
   function baseClassName(template) {
@@ -136,14 +145,13 @@
   function buildNavButton(group) {
     const buttons = nativeButtons(group);
     const template = buttons[buttons.length - 1];
-    if (!template) return null;
     // Keep an independent node. Copying native descendants also copies status
     // badges, tooltip references and app-specific labels that change on saves.
     const btn = document.createElement('button');
     btn.setAttribute(ATTR, '1');
     btn.setAttribute('type', 'button');
     btn.setAttribute('aria-label', 'Droid');
-    btn.dataset.daBase = baseClassName(template);
+    btn.dataset.daBase = template ? baseClassName(template) : 'da-nav-fallback hover:bg-subtle';
     btn.className = btn.dataset.daBase;
     btn.title = 'Droid';
     btn.innerHTML = `<span aria-hidden="true" class="inline-flex shrink-0 items-center justify-center" style="font-size:16px;line-height:1">${ICON}</span><span data-da-nav-label class="min-w-0 flex-1 truncate">Droid</span>`;
@@ -165,21 +173,21 @@
     }
     const buttons = nativeButtons(group);
     const last = buttons[buttons.length - 1];
-    if (!last) return;
     if (!navBtn) {
       navBtn = buildNavButton(group);
       if (!navBtn) return;
     }
     // Hiding/showing native apps should update one stable Droid button, not
     // destroy and recreate a cloned subtree on every template class change.
-    const base = baseClassName(last);
+    const base = last ? baseClassName(last) : navBtn.dataset.daBase;
     if (navBtn.dataset.daBase !== base) navBtn.dataset.daBase = base;
-    const collapsed = ![...last.children].some((el) => (
+    const collapsed = last ? ![...last.children].some((el) => (
       !el.hasAttribute('aria-hidden') && isAppLabel(el.textContent)
-    ));
+    )) : nav().getBoundingClientRect().width < 96;
     const label = navBtn.querySelector('[data-da-nav-label]');
     if (label.hidden !== collapsed) label.hidden = collapsed;
-    if (navBtn.previousElementSibling !== last) last.after(navBtn);
+    if (last && navBtn.previousElementSibling !== last) last.after(navBtn);
+    else if (!last && navBtn.parentElement !== group) group.appendChild(navBtn);
     paintNavButton();
   }
 
@@ -252,7 +260,6 @@
   }
 
   function activate() {
-    cancelFilterRequest();
     state.active = true;
     if (!ensureLayers()) {
       deactivate();
@@ -337,7 +344,7 @@
         <div class="da-metric"><div class="da-muted">缓存命中</div><div class="v">${fmtNum(t.cacheRead)}</div></div>
       </div>
       <div class="da-foot" style="margin-top:10px">输入 ${fmtNum(t.input)} · 输出 ${fmtNum(t.output)} · 缓存写入 ${fmtNum(t.cacheCreation)} · 增量记录 ${Number(t.records) || 0} 条（不是请求次数）。</div>
-      ${partial}${excluded}</div>`;
+      ${partial}${excluded}${t.costError ? `<div class="da-err">${esc(t.costError)}</div>` : ''}</div>`;
   }
 
   function renderUsageGuide(open) {
@@ -346,6 +353,7 @@
       <dl>
         <div><dt>记录口径</dt><dd>按会话累计 Token 的变化生成记录，一条可能包含多次回复，不能直接当作请求次数。</dd></div>
         <div><dt>日期归属</dt><dd>今日用量仅统计起止采样都在今天的增量。首次导入、跨日及无法确定日期的补录不计入今日；日期未分配的记录显示导入时间。</dd></div>
+        <div><dt>模型识别</dt><dd>标题生成等辅助请求可能不出现在对话正文中。依据运行日志补查的记录会标记“模型推定”，不据此补费用或速度；无法可靠区分时保留未知或混合模型。</dd></div>
         <div><dt>费用估算</dt><dd>无法估价时，原生统计中的 0 只是占位值，汇总费用可能不完整。</dd></div>
         <div><dt>速度与首字</dt><dd>仅在本地日志能唯一匹配单次请求时补全，无法匹配时显示“—”。极短回复的 tok/s 会受分块到达时间影响。</dd></div>
       </dl>
@@ -363,7 +371,8 @@
       <span class="da-sub" data-tauri-drag-region>${q.stale ? '旧额度 · ' : ''}最后成功 ${fmtTime(q.updatedAt)}</span>
       <button type="button" class="da-btn" data-da-refresh ${state.refreshing ? 'disabled' : ''}>${REFRESH_ICON}${state.refreshing ? '刷新中…' : '立即刷新'}</button>`;
     headerEl.setAttribute('data-tauri-drag-region', '');
-    const warnings = (d.syncWarnings || []).map((w) => `<div class="da-err">${esc(w)}</div>`).join('');
+    const warnings = [...(d.syncWarnings || []), usageNotifier.error].filter(Boolean)
+      .map((w) => `<div class="da-err">${esc(w)}</div>`).join('');
     // Keep an expanded explanation open when quota/usage data refreshes.
     const guideOpen = bodyEl.querySelector('[data-da-usage-guide]')?.open === true;
     bodyEl.innerHTML = renderQuota(d) + renderToday(d) + warnings + renderUsageGuide(guideOpen) +
@@ -371,7 +380,7 @@
   }
 
   function requestRefresh() {
-    state.refreshRequested = true;
+    state.refreshRequested += 1;
     state.refreshing = true;
     render();
   }
@@ -406,39 +415,14 @@
   // ---- 用量统计页：Droid 筛选按钮与名称显示 ----
   const DROID_PROVIDER = '_droid_session';
   const DROID_PROVIDER_LABEL = 'Droid · 会话日志';
-  const nativeUsage = createNativeUsageBridge({ droidProvider: DROID_PROVIDER, droidLabel: DROID_PROVIDER_LABEL });
+  const nativeUsage = createNativeUsageBridge();
   const POPUP_SELECTOR = '[role="menu"], [role="listbox"]';
   const OPTION_SELECTOR = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]';
   const PROVIDER_TRIGGER_SELECTOR = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], button[role="combobox"]';
   const ICON_MASK = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='93.5 92.814 318 318'><path d='${ICON_PATH}'/></svg>`)}")`;
   let filterBtn = null;
-  let filterBusy = false;
-  let filterRequest = null;
-  let filterGeneration = 0;
-  const FILTER_CANCELLED = Symbol('filter-cancelled');
   let toastEl = null;
   let destroyed = false;
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  function cancelFilterRequest() {
-    filterRequest = null;
-    return ++filterGeneration;
-  }
-  function requireFilterRequest(request) {
-    if (destroyed || state.active || filterRequest !== request || !request.group.isConnected
-        || appFilterGroup() !== request.group) throw FILTER_CANCELLED;
-  }
-  async function waitForFilter(request, fn, timeout = 1500) {
-    const end = Date.now() + timeout;
-    while (Date.now() < end) {
-      requireFilterRequest(request);
-      const v = fn();
-      if (v) return v;
-      await sleep(40);
-    }
-    requireFilterRequest(request);
-    return null;
-  }
 
   // React keeps a single text node for these labels and updates it via
   // nodeValue, so editing it in place survives re-renders without conflicts.
@@ -472,11 +456,6 @@
   function providerTrigger(group) {
     const bar = filterToolbar(group);
     return bar ? bar.querySelector(PROVIDER_TRIGGER_SELECTOR) : null;
-  }
-  function allAppsButton(group) {
-    if (!group) return null;
-    return nativeButtons(group).find((b) => elementLabels(b).some((value) => /^(全部|所有应用|所有應用|全部應用程式|All|All apps|All applications)$/i.test(value)))
-      || nativeButtons(group).find((b) => !b.getAttribute('aria-label'));
   }
   function elementLabels(element) {
     if (!element) return [];
@@ -529,13 +508,6 @@
       if (!span.children.length && span.textContent.trim() === DROID_PROVIDER) setText(span, DROID_PROVIDER_LABEL);
     });
   }
-  function isDroidProviderSelected(group) {
-    return providerBinding(group)?.selected ?? isDroidProvider(providerTrigger(group));
-  }
-  function providerBinding(group) {
-    return nativeUsage.resolve(providerTrigger(group), filterToolbar(group));
-  }
-
   function decorateUsage() {
     if (destroyed) return;
     const group = appFilterGroup();
@@ -573,13 +545,10 @@
       filterBtn = buildFilterButton(group);
     }
     if (!filterBtn) return;
-    const on = isDroidProviderSelected(group) && allAppsButton(group)?.getAttribute('aria-pressed') === 'true';
-    if (on) group.setAttribute('data-da-on', '1');
-    else group.removeAttribute('data-da-on');
+    const on = nativeUsage.resolve(group)?.selected === true;
     setAttribute(filterBtn, 'aria-pressed', on ? 'true' : 'false');
-    // Keep the control usable so a later click can replace an in-flight choice.
     filterBtn.disabled = false;
-    setAttribute(filterBtn, 'aria-busy', filterBusy ? 'true' : 'false');
+    setTitle(filterBtn, 'Droid');
   }
 
   function buildFilterButton(group) {
@@ -597,7 +566,7 @@
     btn.removeAttribute('aria-describedby');
     btn.removeAttribute('aria-haspopup');
     btn.removeAttribute('aria-expanded');
-    btn.title = 'Droid（按供应商筛选 Droid 会话日志）';
+    btn.title = 'Droid';
     btn.classList.add('da-filter');
     const icon = btn.querySelector('span[aria-hidden="true"]');
     if (icon) icon.innerHTML = `<span class="inline-flex items-center justify-center flex-shrink-0" style="width:16px;height:16px;font-size:16px;line-height:1">${ICON}</span>`;
@@ -605,7 +574,7 @@
       e.preventDefault();
       e.stopPropagation();
       // Match the native app buttons: selecting the active app is idempotent.
-      requestDroidFilter(true, group);
+      selectDroidApp(group);
     });
     group.appendChild(btn);
     return btn;
@@ -615,74 +584,28 @@
     if (toastEl) toastEl.remove();
     toastEl = document.createElement('div');
     toastEl.setAttribute(ATTR, 'toast');
+    toastEl.setAttribute('role', 'status');
     toastEl.className = 'da-toast';
     toastEl.textContent = msg;
     document.body.appendChild(toastEl);
     const el = toastEl;
-    setTimeout(() => { el.remove(); if (toastEl === el) toastEl = null; }, 2500);
+    setTimeout(() => { el.remove(); if (toastEl === el) toastEl = null; }, 8000);
   }
 
-  // Confirm native filter state. Empty rows or a different statistics tab are
-  // not evidence that selection failed; native queries render asynchronously.
-  function filterSettled(group, wantOn) {
-    return !!group && !!providerTrigger(group)
-      && isDroidProviderSelected(group) === wantOn
-      && allAppsButton(group)?.getAttribute('aria-pressed') === 'true';
-  }
-
-  async function applyDroidFilter(request) {
-    requireFilterRequest(request);
-    const { group, wantOn } = request;
-    // Resolve the native callback before changing any filter. This is a scoped
-    // adapter, not a fallback to opening/clicking the provider menu.
-    if (!providerBinding(group)) throw new Error('当前原版的筛选接口尚未适配，无法直接切换 Droid。');
-    const all = allAppsButton(group);
-    if (!all) throw new Error('无法识别原版的全部应用按钮。');
-    if (all.getAttribute('aria-pressed') !== 'true') {
-      all.click();
-      const switched = await waitForFilter(request, () => allAppsButton(group)?.getAttribute('aria-pressed') === 'true', 2500);
-      if (!switched) throw new Error('原版未切换到全部应用，请稍后重试。');
+  function selectDroidApp(group) {
+    if (destroyed || state.active || !group?.isConnected || appFilterGroup() !== group) return;
+    const binding = nativeUsage.resolve(group);
+    if (!binding) {
+      toast('当前原版的应用筛选接口尚未适配，无法切换 Droid。');
+      return;
     }
-    if (filterSettled(group, wantOn)) return;
-    const available = await waitForFilter(request, () => {
-      const current = providerBinding(group);
-      return current?.available(wantOn);
-    }, 2500);
-    if (!available) throw new Error(wantOn
-      ? '当前时间范围尚无可用的 Droid 筛选数据，请立即同步或调整时间范围。'
-      : '原版清除筛选接口暂不可用，请重试。');
-    requireFilterRequest(request);
-    // Reacquire after the await; do not call a closure from a previous render.
-    const binding = providerBinding(group);
-    if (!binding?.available(wantOn)) throw new Error('原版筛选数据刚刚更新，请重试。');
-    binding.choose(wantOn);
-    const settled = await waitForFilter(request, () => filterSettled(group, wantOn), 2000);
-    if (!settled) throw new Error('原版筛选状态未更新，请重试。');
-  }
-
-  async function requestDroidFilter(wantOn, group) {
-    if (destroyed || state.active || !group?.isConnected) return;
-    ++filterGeneration;
-    filterRequest = { wantOn, group };
-    if (filterBusy) return;
-    filterBusy = true;
-    try {
-      while (filterRequest && !destroyed) {
-        const request = filterRequest;
-        try {
-          decorateUsage();
-          await applyDroidFilter(request);
-        } catch (error) {
-          if (error !== FILTER_CANCELLED && !destroyed && filterRequest === request) {
-            toast(error.message || 'Droid 筛选未完成，请重试。');
-          }
-        }
-        if (filterRequest === request) filterRequest = null;
-      }
-    } finally {
-      filterBusy = false;
-      if (!destroyed) scheduleCheck();
-    }
+    // The native sliding indicator measures pressed buttons in its layout
+    // effect. Include our button before React commits the app transition.
+    setAttribute(filterBtn, 'aria-pressed', 'true');
+    binding.choose();
+    // React renders its normal empty/loading state and queries all panels.
+    // No provider-option polling, date changes, or synthetic empty-data error.
+    scheduleCheck();
   }
 
   function scheduleCheck() {
@@ -723,45 +646,22 @@
   styleEl.textContent = `${CSS}\n:root{--da-icon:${ICON_MASK}}`;
   document.head.appendChild(styleEl);
 
-  // A manual action outside the app filter supersedes queued/in-flight work,
-  // including keyboard clicks on provider, model and date controls.
-  const cancelOutsideFilter = (event) => {
-    if (event.isTrusted && !appFilterGroup()?.contains(event.target)) cancelFilterRequest();
-  };
-  on(document, 'pointerdown', cancelOutsideFilter, true);
-  on(document, 'click', cancelOutsideFilter, true);
   on(document, 'click', (e) => {
     const btn = e.target.closest && e.target.closest('nav button');
     if (btn && !btn.hasAttribute(ATTR)) {
-      cancelFilterRequest();
       if (state.active) deactivate();
     }
   }, true);
   on(window, 'resize', () => { if (state.active) layout(); });
   // CC Switch's own "立即同步" only scans the tools it knows; also sync Droid.
   on(document, 'click', (e) => {
-    const btn = e.target.closest && e.target.closest('header button');
-    if (btn && /^(立即同步|Sync now)$/i.test(btn.textContent.trim())) state.syncRequested = true;
-  }, true);
-  // Run the native All action first, then explicitly clear the Droid provider.
-  // Never swallow the user's native click or infer this action as a toggle.
-  on(document, 'click', (e) => {
-    const btn = e.target.closest && e.target.closest('[role="group"] > button');
-    if (!btn || btn.hasAttribute(ATTR) || !e.isTrusted) return;
-    const group = btn.parentElement;
-    if (group !== appFilterGroup()) return;
-    const clearDroid = isDroidProviderSelected(group) || filterRequest?.group === group;
-    const generation = cancelFilterRequest();
-    if (clearDroid && btn === allAppsButton(group)) {
-      // A microtask can run between native event listeners; use the next task
-      // so React's original click handler gets the complete event first.
-      setTimeout(() => {
-        if (!destroyed && generation === filterGeneration && group.isConnected
-            && appFilterGroup() === group) requestDroidFilter(false, group);
-      }, 0);
+    const btn = e.target.closest && e.target.closest('button');
+    if (btn && !btn.disabled && !btn.closest(`[${ATTR}]`)
+        && (mainArea()?.contains(btn) || btn.closest('[role="dialog"]'))
+        && elementLabels(btn).some((text) => /^(立即同步|立即同步處理|Sync now)$/i.test(text))) {
+      state.syncRequested += 1;
     }
   }, true);
-
   observer = new MutationObserver((records) => {
     if (records.some(relevantMutation)) scheduleCheck();
   });
@@ -780,20 +680,20 @@
     setData(data) {
       state.data = data;
       state.refreshing = !!(data && data.refreshing);
+      usageNotifier.update(data?.usageRevision);
       render();
     },
     poll() {
       const r = state.refreshRequested;
       const s = state.syncRequested;
-      state.refreshRequested = false;
-      state.syncRequested = false;
+      void usageNotifier.flush();
       // Settings can be the initial page or a reload destination. The bridge
       // being installed is independent of the app sidebar being visible.
       return { version: VERSION, instanceId: INSTANCE_ID, ready: !destroyed, navAvailable: !!navBtn?.isConnected, refresh: r, syncNow: s, active: state.active };
     },
     destroy() {
       destroyed = true;
-      cancelFilterRequest();
+      usageNotifier.close();
       deactivate();
       observer && observer.disconnect();
       clearTimeout(checkTimer);
@@ -803,8 +703,6 @@
       document.querySelectorAll('[data-da-auto-popup]').forEach((el) => el.removeAttribute('data-da-auto-popup'));
       document.body.removeAttribute('data-da-busy');
       document.querySelectorAll('[data-da-loading]').forEach((el) => el.removeAttribute('data-da-loading'));
-      const g = appFilterGroup();
-      if (g) g.removeAttribute('data-da-on');
       delete window.__ccSwitchDroidHook;
     },
   };

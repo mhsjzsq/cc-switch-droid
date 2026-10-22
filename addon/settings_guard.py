@@ -8,7 +8,8 @@ This guard catches JSON damage, not every native settings schema constraint.
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+
+import config
 
 
 def _unique_object(pairs):
@@ -25,7 +26,7 @@ def _reject_constant(_value):
 
 
 def preserve_before_launch(directory):
-    path = Path.home() / ".cc-switch" / "settings.json"
+    path = config.native_settings_path()
     try:
         content = path.read_bytes()
     except FileNotFoundError:

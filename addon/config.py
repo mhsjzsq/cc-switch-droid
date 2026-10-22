@@ -55,6 +55,11 @@ def db_path(cfg):
     return resolve_path(cfg["ccSwitchDbPath"], Path.home() / ".cc-switch" / "cc-switch.db")
 
 
+def native_settings_path():
+    # Device preferences do not move with a custom usage database.
+    return Path.home() / ".cc-switch" / "settings.json"
+
+
 def sessions_dir(cfg):
     return resolve_path(cfg["droidSessionsDir"], Path.home() / ".factory" / "sessions")
 

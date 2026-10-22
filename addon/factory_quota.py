@@ -19,6 +19,21 @@ class QuotaError(Exception):
         self.status = status
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib otherwise copies Authorization even to a different host.
+        # These fixed API endpoints must answer directly, including over HTTPS.
+        fp.close()
+        raise QuotaError("Factory 接口发生重定向，已停止请求以保护 API Key", code)
+
+
+def _validated_key(value):
+    key = value.strip()
+    if any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise QuotaError("Factory API Key 格式不正确，请检查空白或非 ASCII 字符")
+    return key
+
+
 def _object(value, name):
     if value is None:
         return {}
@@ -30,10 +45,10 @@ def _object(value, name):
 def resolve_api_key(configured):
     key = (configured or "").strip()
     if key:
-        return key
+        return _validated_key(key)
     key = os.environ.get("FACTORY_API_KEY", "").strip()
     if key:
-        return key
+        return _validated_key(key)
     env_file = Path.home() / ".factory" / ".env"
     try:
         for line in env_file.read_text(encoding="utf-8-sig").splitlines():
@@ -41,13 +56,14 @@ def resolve_api_key(configured):
             if m:
                 value = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
                 if value:
-                    return value
-    except OSError:
+                    return _validated_key(value)
+    except FileNotFoundError:
         pass
     return ""
 
 
 def _get(base, route, key, timeout=12):
+    key = _validated_key(key)
     req = urllib.request.Request(
         base + route,
         headers={
@@ -56,16 +72,21 @@ def _get(base, route, key, timeout=12):
             "Origin": APP,
             "Referer": APP + "/",
             "x-factory-client": "web-app",
-            "User-Agent": "CC-Switch-Droid-Hook/2.2.4",
+            "User-Agent": "CC-Switch-Droid-Hook/2.2.8",
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+        opener = urllib.request.build_opener(_NoRedirect())
+        with opener.open(req, timeout=timeout) as resp:
+            content = resp.read(1_048_577)
+            if len(content) > 1_048_576:
+                raise QuotaError("Factory 响应过大，已停止读取")
+            body = json.loads(content.decode("utf-8"))
             if not isinstance(body, dict):
                 raise QuotaError("Factory 返回的内容不是 JSON 对象")
             return body
     except urllib.error.HTTPError as e:
+        e.close()
         if e.code in (401, 403):
             raise QuotaError("API key 无效或没有权限（HTTP %d）" % e.code, e.code) from None
         if e.code == 429:
@@ -78,10 +99,12 @@ def _get(base, route, key, timeout=12):
 
 
 def _num(v):
+    if isinstance(v, bool):
+        return None
     try:
         value = float(v)
         return value if math.isfinite(value) else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
