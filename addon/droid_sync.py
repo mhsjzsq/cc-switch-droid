@@ -31,6 +31,7 @@ class SyncResult:
     inserted: int = 0
     timings_updated: int = 0
     models_updated: int = 0
+    costs_updated: int = 0
     warnings: list = field(default_factory=list)
 
 
@@ -203,6 +204,46 @@ def find_price(pricing, model):
     return pricing.get(model)
 
 
+def _estimate_costs(counts, price):
+    if price is None:
+        return None
+    try:
+        costs = [Decimal(n) * p / Decimal(1_000_000) for n, p in zip(counts, price)]
+        return costs if math.isfinite(float(sum(costs))) else None
+    except (DecimalException, ValueError, OverflowError):
+        return None
+
+
+def _repair_costs(conn, prices, cancelled):
+    """Reprice unpriced single-model imports when exact pricing becomes available."""
+    rows = conn.execute(f"""SELECT p.request_id,p.request_model,p.model,
+        p.input_tokens,p.output_tokens,p.cache_read_tokens,p.cache_creation_tokens,m.note
+        FROM proxy_request_logs p JOIN {RECORD_TABLE} m USING(request_id)
+        WHERE p.data_source=? AND m.model_quality='single' AND m.cost_known=0
+    """, (DATA_SOURCE,)).fetchall()
+    count = 0
+    for request_id, model, label, inp, out, cr, cc, note in rows:
+        _check_cancelled(cancelled)
+        counts = (inp, out, cr, cc)
+        if any(type(n) is not int or n < 0 for n in counts):
+            continue
+        costs = _estimate_costs(counts, find_price(prices, model))
+        if costs is None:
+            continue
+        conn.execute("""UPDATE proxy_request_logs SET model=?,pricing_model=?,
+            input_cost_usd=?,output_cost_usd=?,cache_read_cost_usd=?,cache_creation_cost_usd=?,
+            total_cost_usd=? WHERE request_id=?""", (
+                label.removesuffix(" [费用未知]"), model,
+                *(format(c, "f") for c in costs), format(sum(costs), "f"), request_id,
+            ))
+        conn.execute(f"UPDATE {RECORD_TABLE} SET cost_known=1,note=? WHERE request_id=?", (
+            note.replace("费用未知；原生统计中的 0 仅为数据库占位值", "费用已按当前数据库精确匹配单价补算"),
+            request_id,
+        ))
+        count += 1
+    return count
+
+
 def _previous_snapshot(row, accounted):
     if row is None:
         return None
@@ -223,16 +264,10 @@ def _previous_snapshot(row, accounted):
 
 def _insert(conn, sid, delta, model, model_quality, time_quality, prices, now, sample_start):
     price = find_price(prices, model) if model_quality == "single" else None
-    known = price is not None
-    costs = [Decimal(0)] * 4
-    if known:
-        try:
-            estimated = [Decimal(n) * p / Decimal(1_000_000) for n, p in zip(delta, price)]
-            if not math.isfinite(float(sum(estimated))):
-                raise ValueError("费用超出可显示范围")
-            costs = estimated
-        except (DecimalException, ValueError, OverflowError):
-            known = False
+    costs = _estimate_costs(delta, price)
+    known = costs is not None
+    if costs is None:
+        costs = [Decimal(0)] * 4
     notes = []
     if time_quality == "unallocated":
         notes.append("历史/补录汇总，日期未分配；记录时间为导入时间")
@@ -355,6 +390,7 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=(), model_requests=()
         result.models_updated = droid_models.repair(
             conn, [r for r in model_requests if r.session_id in sources], RECORD_TABLE, cancelled,
         )
+        result.costs_updated = _repair_costs(conn, prices, cancelled)
         result.timings_updated, timing_warnings = droid_timing.enrich(
             conn, [r for r in timings if r.session_id in sources], cancelled,
             record_table=RECORD_TABLE,
@@ -389,6 +425,14 @@ def today_usage(db_path):
             WHERE p.data_source=? AND m.time_quality='observed'
                 AND p.created_at>=? AND p.created_at<?
         """, (DATA_SOURCE, start, end)).fetchone()
+        unpriced = conn.execute(f"""
+            SELECT m.model_quality,p.request_model,COUNT(*)
+            FROM proxy_request_logs p JOIN {RECORD_TABLE} m USING(request_id)
+            WHERE p.data_source=? AND m.time_quality='observed' AND m.cost_known=0
+                AND p.created_at>=? AND p.created_at<?
+            GROUP BY m.model_quality,p.request_model
+        """, (DATA_SOURCE, start, end)).fetchall()
+        prices = load_pricing(conn) if any(r[0] == "single" for r in unpriced) else {}
         excluded = conn.execute(f"""
             SELECT COUNT(*), COALESCE(SUM(p.input_tokens+p.output_tokens+
                 p.cache_read_tokens+p.cache_creation_tokens),0)
@@ -399,11 +443,25 @@ def today_usage(db_path):
         conn.close()
     records, inp, out, cr, cc, cost, unknown = row
     valid_cost = math.isfinite(cost)
+    reasons = []
+    for quality, model, count in unpriced:
+        reason = {
+            "inferred": f"{model} 仅推定了模型，缺少逐请求 Token 证据",
+            "mixed": "多个模型共用累计 Token，无法可靠拆分费用",
+            "unknown": "未识别出实际模型，缺少完整对话或可匹配的请求日志",
+        }.get(quality)
+        if reason is None:
+            reason = (
+                f"{model} 缺少有效的精确匹配价格"
+                if find_price(prices, model) is None else f"{model} 费用计算超出可显示范围"
+            )
+        reasons.append({"reason": reason, "records": count})
     return {
         "available": True, "date": day.date().isoformat(), "records": records, "input": inp, "output": out,
         "cacheRead": cr, "cacheCreation": cc, "tokens": inp + out + cr + cc,
         "cost": round(cost, 6) if unknown == 0 and valid_cost else None,
         "knownCost": round(cost, 6) if valid_cost else None, "unknownCostRecords": unknown,
+        "knownCostRecords": records - unknown, "unknownCostReasons": reasons,
         "costError": None if valid_cost else "历史费用汇总超出可显示范围，请检查原版数据库记录",
         "unallocatedRecords": excluded[0], "unallocatedTokens": excluded[1],
     }

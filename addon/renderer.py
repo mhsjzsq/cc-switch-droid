@@ -7,7 +7,7 @@ import cdp
 import config
 import windows
 
-VERSION = "2.2.8"
+VERSION = "2.2.9"
 KEY = "__ccSwitchDroidHook"
 
 

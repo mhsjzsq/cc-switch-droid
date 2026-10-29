@@ -333,14 +333,17 @@
     if (!t.available) {
       return `<div class="da-card"><div class="da-card-h"><span class="da-name">今日 Droid 用量</span></div><div class="da-muted">${esc(t.error || '正在读取本次启动的用量数据…')}</div></div>`;
     }
-    const cost = t.cost != null ? `$${Number(t.cost).toFixed(2)}` : '未知';
+    const amount = t.cost != null ? t.cost : t.knownCostRecords > 0 ? t.knownCost : null;
+    const cost = amount != null ? `$${Number(amount).toFixed(2)}` : '暂无法估算';
+    const costLabel = t.unknownCostRecords && amount != null ? '估算成本（已知部分）' : '估算成本';
     const partial = t.unknownCostRecords
-      ? `<div class="da-foot">已知费用部分 $${Number(t.knownCost || 0).toFixed(2)}；${Number(t.unknownCostRecords)} 条记录无法估价。</div>` : '';
+      ? `<div class="da-foot">已计价 ${Number(t.knownCostRecords) || 0} 条；另有 ${Number(t.unknownCostRecords)} 条未计价，今日总成本尚不完整。</div>
+        ${(t.unknownCostReasons || []).map((item) => `<div class="da-foot">${Number(item.records)} 条：${esc(item.reason)}。</div>`).join('')}` : '';
     const excluded = `<div class="da-foot" style="margin-top:8px">另有 ${Number(t.unallocatedRecords) || 0} 条历史或日期未分配记录（${fmtNum(t.unallocatedTokens)} tokens），未计入今日。</div>`;
     return `<div class="da-card"><div class="da-card-h"><span class="da-name">今日 Droid 用量</span><span style="flex:1"></span><span class="da-muted">按本地采样日期</span></div>
       <div class="da-grid">
         <div class="da-metric"><div class="da-muted">Tokens</div><div class="v" title="${esc(t.tokens)}">${fmtNum(t.tokens)}</div></div>
-        <div class="da-metric"><div class="da-muted">估算成本</div><div class="v">${cost}</div></div>
+        <div class="da-metric"><div class="da-muted">${costLabel}</div><div class="v">${cost}</div></div>
         <div class="da-metric"><div class="da-muted">缓存命中</div><div class="v">${fmtNum(t.cacheRead)}</div></div>
       </div>
       <div class="da-foot" style="margin-top:10px">输入 ${fmtNum(t.input)} · 输出 ${fmtNum(t.output)} · 缓存写入 ${fmtNum(t.cacheCreation)} · 增量记录 ${Number(t.records) || 0} 条（不是请求次数）。</div>
@@ -353,8 +356,8 @@
       <dl>
         <div><dt>记录口径</dt><dd>按会话累计 Token 的变化生成记录，一条可能包含多次回复，不能直接当作请求次数。</dd></div>
         <div><dt>日期归属</dt><dd>今日用量仅统计起止采样都在今天的增量。首次导入、跨日及无法确定日期的补录不计入今日；日期未分配的记录显示导入时间。</dd></div>
-        <div><dt>模型识别</dt><dd>标题生成等辅助请求可能不出现在对话正文中。依据运行日志补查的记录会标记“模型推定”，不据此补费用或速度；无法可靠区分时保留未知或混合模型。</dd></div>
-        <div><dt>费用估算</dt><dd>无法估价时，原生统计中的 0 只是占位值，汇总费用可能不完整。</dd></div>
+        <div><dt>模型识别</dt><dd>标题生成等辅助请求可能不出现在对话正文中。仅依据请求日志识别的记录标记“模型推定”，不直接补费用或速度。另经完整主请求用量与会话累计量对账、余量唯一对应标题请求的记录标记“Token对账”，可估算费用；无法可靠区分时保留未知或混合模型。</dd></div>
+        <div><dt>费用估算</dt><dd>按数据库中与实际模型精确匹配的单价估算，不代表 Factory 套餐扣费。有未计价记录时显示已知费用小计及缺失原因；全部未计价时显示“暂无法估算”。已确认单一模型的记录会在后续同步时尝试补算费用。原生统计中的未知费用 0 只是占位值。</dd></div>
         <div><dt>速度与首字</dt><dd>仅在本地日志能唯一匹配单次请求时补全，无法匹配时显示“—”。极短回复的 tok/s 会受分块到达时间影响。</dd></div>
       </dl>
       <p class="da-guide-note">旧版记录的日期、费用及估算速度未经核实。</p>

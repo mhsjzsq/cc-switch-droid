@@ -6,7 +6,7 @@ A Windows extension that adds a Droid page, Factory quota information, and local
 
 Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for that session. The project includes a Python runtime and does not require a system Python installation or the old Addon directory.
 
-**Current version: 2.2.8** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
+**Current version: 2.2.9** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
 
 ## Features
 
@@ -100,8 +100,8 @@ The usage dashboard's Droid icon uses the same app-filter state as native app bu
 
 - **Usage consistency**: Compare cumulative counts against previously imported totals and save usage changes and sampling information in one transaction. Decreasing counters, duplicate session IDs, or incomplete reads are skipped or reported.
 - **Date attribution**: Initial imports, changes spanning multiple days, and imports without reliable sampling boundaries are marked as having an unallocated date. The Droid page's daily totals only include changes whose two samples fall within the current day.
-- **Model identification**: Prefer actual transcript model IDs over later configuration changes. Missing assistant messages can be supplemented by a uniquely matched completed request within a trusted sample, explicitly labeled as inferred. Without per-request token evidence, costs and timings are not backfilled. Aggregates involving multiple models remain mixed rather than assigning all tokens to the main model.
-- **Cost attribution**: Estimate costs only when model evidence is complete and the database contains an exact pricing match. Other costs remain unknown. Sessions using multiple models are not assigned entirely to the last model.
+- **Model identification**: Prefer actual transcript model IDs over later configuration changes. Missing assistant messages can be supplemented by a uniquely matched completed request within a trusted sample, explicitly labeled as inferred. Model inference alone does not backfill costs or timings. A separate reconciliation can estimate costs when subtracting all main-request token counters from the cumulative session counters leaves exactly the unpriced record and uniquely identifies a successful title request. These records are labeled `Token对账` (token reconciliation), without backfilling timings. This repair is separate from routine automatic model inference. Aggregates involving multiple models remain mixed rather than assigning all tokens to the main model.
+- **Cost attribution**: Estimate costs only when model evidence is complete and the database contains an exact pricing match. Daily costs show the known subtotal with explanations for unpriced records, or an unavailable estimate when none can be priced. Subsequent syncs backfill unpriced single-model records using the current database's exact valid pricing match, even without new tokens. Sessions using multiple models are not assigned entirely to the last model. These local price-table estimates do not represent Factory subscription quota deductions or actual bills.
 - **Native totals**: The native dashboard does not understand all Droid attribution metadata. A cost of `0` can be a placeholder for an unknown cost, and records with unallocated dates use the import time. Consult the statistics notes on the Droid page when interpreting daily usage.
 - **Historical data**: Existing records from older versions keep their values. Changing the launch method does not automatically correct them.
 - **Quota queries**: Failed requests display an error alongside the most recent successful data. A failed attempt does not replace the last successful refresh time.

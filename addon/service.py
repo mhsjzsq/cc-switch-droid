@@ -149,7 +149,7 @@ class DataService:
                 try:
                     result, self.today = job.result()
                     self.warnings = result.warnings
-                    if result.inserted or result.timings_updated or result.models_updated:
+                    if result.inserted or result.timings_updated or result.models_updated or result.costs_updated:
                         self.usage_revision += 1
                     if result.inserted:
                         self.state.log("usage_imported", records=result.inserted)
@@ -157,6 +157,8 @@ class DataService:
                         self.state.log("usage_timings_updated", records=result.timings_updated)
                     if result.models_updated:
                         self.state.log("usage_models_updated", records=result.models_updated)
+                    if result.costs_updated:
+                        self.state.log("usage_costs_updated", records=result.costs_updated)
                 except CancelledError:
                     return
                 except Exception as error:
