@@ -217,6 +217,7 @@ function installUI(emptyAppsLabel = null) {
     MutationObserver: class { observe() {} disconnect() {} },
   });
   vm.runInContext(source, ui);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../addon/usage_timing.js'), 'utf8'), ui);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../addon/inject.js'), 'utf8'), ui);
   return { window, listeners, group };
 }

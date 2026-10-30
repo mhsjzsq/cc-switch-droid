@@ -158,5 +158,40 @@ function createNativeUsageBridge() {
     return matches.length === 1 ? matches[0] : null;
   }
 
-  return { resolve };
+  function requestTimingCells(table) {
+    const path = committedPath(table);
+    if (!path) return [];
+    const bodies = [];
+    for (let child = path[0].child; child; child = child.sibling) {
+      if (child.type === 'tbody') bodies.push(child);
+    }
+    if (bodies.length !== 1) return [];
+    const rows = [];
+    for (let row = bodies[0].child; row; row = row.sibling) {
+      if (row.type !== 'tr' || typeof row.key !== 'string') return [];
+      rows.push(row);
+    }
+    if (!rows.length) return [];
+    // useRequestLogs exposes the current query result through useSyncExternalStore.
+    // Match every rendered request key, never infer a record from its display text.
+    const snapshots = new Set(path.filter((fiber) => typeof fiber.type === 'function')
+      .flatMap(stateHooks).map((hook) => hook.memoizedState?.data)
+      .filter((result) => Array.isArray(result?.data) && result.data.length === rows.length
+        && result.data.every((log, index) => log?.requestId === rows[index].key)));
+    if (snapshots.size !== 1) return [];
+    const logs = [...snapshots][0].data;
+    return rows.flatMap((row, index) => {
+      const cells = [];
+      for (let column = row.child; column; column = column.sibling) {
+        if (!['speed', 'firstToken'].includes(column.key)) continue;
+        const cell = column.child;
+        if (cell?.type !== 'td' || !table.contains(cell.stateNode)) continue;
+        cells.push({ element: cell.stateNode, column: column.key, log: logs[index],
+          nativeTitle: cell.memoizedProps.title ?? null });
+      }
+      return cells;
+    });
+  }
+
+  return { resolve, requestTimingCells };
 }

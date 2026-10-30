@@ -6,7 +6,7 @@
 
 通过 `Open-Hook.cmd` 启动原版 CC Switch，并为这次运行加载 Hook。项目自带 Python 运行环境，无需安装系统 Python，也不依赖旧版 Addon 目录。
 
-**当前版本：2.2.10** · [修改记录](CHANGELOG.md) · [配置模板](config.example.json) · [许可证](LICENSE)
+**当前版本：2.2.11** · [修改记录](CHANGELOG.md) · [配置模板](config.example.json) · [许可证](LICENSE)
 
 ## 功能
 
@@ -122,6 +122,8 @@ Hook 读取 `droid-log-single.log` 及其轮换文件中的请求总耗时、首
 
 扫描间隔不会被当作生成耗时，但较长间隔更容易将多次请求合并，降低速度匹配率。Hook 不发送额外测速请求。
 
+在适配的原生请求日志表中，将鼠标悬浮到速度或首字的“—”单元格，可查看当前记录的缺失原因。速度提示区分输出量未达门槛、耗时不足与计时缺失；首字提示独立说明缺少可用计时数据。提示采用原生 `title`，不增加图标，也不更改表格数值和显示门槛。记录取自当前页面已加载的数据，不额外查询数据库；无法可靠识别原版表格结构时保留原版显示。
+
 ## 工作方式
 
 ```text
@@ -186,6 +188,7 @@ Open-Hook.cmd
 | `addon/hook_client.py` / `addon/windows.py` | 进程生命周期、互斥与连接归属检查。 |
 | `addon/renderer.py` / `addon/cdp.py` | 页面连接与 Hook 注入。 |
 | `addon/inject.js` / `addon/native_usage.js` | Droid 页面与原生筛选适配。 |
+| `addon/usage_timing.js` | 原生请求日志缺失速度、首字的悬浮说明。 |
 | `addon/service.py` | 同步、额度查询及任务调度。 |
 | `addon/droid_sync.py` / `addon/droid_timing.py` | 用量导入、统计归属与耗时匹配。 |
 | `addon/factory_quota.py` | Factory 额度读取。 |

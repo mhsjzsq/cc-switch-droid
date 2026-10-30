@@ -7,7 +7,7 @@ import cdp
 import config
 import windows
 
-VERSION = "2.2.10"
+VERSION = "2.2.11"
 KEY = "__ccSwitchDroidHook"
 
 
@@ -111,7 +111,7 @@ class RendererHooks:
         self.retry_after = {}
         raw = "\n".join(
             (config.ROOT / "addon" / name).read_text(encoding="utf-8-sig")
-            for name in ("native_usage.js", "inject.js")
+            for name in ("native_usage.js", "usage_timing.js", "inject.js")
         )
         raw = raw.replace("__ADDON_VERSION__", VERSION)
         self.source = (

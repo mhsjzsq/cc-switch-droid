@@ -419,6 +419,7 @@
   const DROID_PROVIDER = '_droid_session';
   const DROID_PROVIDER_LABEL = 'Droid · 会话日志';
   const nativeUsage = createNativeUsageBridge();
+  const missingTimingTitles = createMissingTimingTitles();
   const POPUP_SELECTOR = '[role="menu"], [role="listbox"]';
   const OPTION_SELECTOR = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]';
   const PROVIDER_TRIGGER_SELECTOR = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], button[role="combobox"]';
@@ -515,6 +516,9 @@
     if (destroyed) return;
     const group = appFilterGroup();
     usageRoot = group ? mainArea() : null;
+    missingTimingTitles.update(usageRoot
+      ? [...usageRoot.querySelectorAll('table')].flatMap((table) => nativeUsage.requestTimingCells(table))
+      : []);
     if (!group) {
       filterBtn?.remove();
       filterBtn = null;
@@ -699,6 +703,7 @@
       usageNotifier.close();
       deactivate();
       observer && observer.disconnect();
+      missingTimingTitles.close();
       clearTimeout(checkTimer);
       clearInterval(timer);
       listeners.forEach((off) => off());

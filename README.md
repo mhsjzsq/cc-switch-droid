@@ -6,7 +6,7 @@ A Windows extension that adds a Droid page, Factory quota information, and local
 
 Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for that session. The project includes a Python runtime and does not require a system Python installation or the old Addon directory.
 
-**Current version: 2.2.10** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
+**Current version: 2.2.11** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
 
 ## Features
 
@@ -122,6 +122,8 @@ This includes the wait for the first token and requires at least 200 output toke
 
 The scanning interval is never used as generation time. However, longer intervals are more likely to combine multiple requests into one record, reducing timing match coverage. The Hook does not send additional requests to measure speed.
 
+In the supported native request-log table, hovering over a speed or time-to-first-token cell displaying “—” shows a Chinese tooltip explaining the missing value. Speed explanations distinguish token thresholds, insufficient duration, and missing timing; first-token explanations describe missing timing independently. These native `title` tooltips add no icons and do not change values or thresholds. They use records already loaded by the page without additional database queries. If the native table structure cannot be reliably identified, the original display is preserved.
+
 ## How it works
 
 ```text
@@ -186,6 +188,7 @@ The helper retries after the first connection failure and exits with an error if
 | `addon/hook_client.py` / `addon/windows.py` | Process lifecycle, instance locking, and connection ownership checks. |
 | `addon/renderer.py` / `addon/cdp.py` | Page connections and Hook injection. |
 | `addon/inject.js` / `addon/native_usage.js` | Droid interface and native filter integration. |
+| `addon/usage_timing.js` | Hover explanations for missing speed and time-to-first-token values. |
 | `addon/service.py` | Usage sync, quota queries, and scheduling. |
 | `addon/droid_sync.py` / `addon/droid_timing.py` | Usage import, statistics attribution, and timing matches. |
 | `addon/factory_quota.py` | Factory quota queries. |
