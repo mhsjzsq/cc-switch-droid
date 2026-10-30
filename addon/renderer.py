@@ -7,7 +7,7 @@ import cdp
 import config
 import windows
 
-VERSION = "2.2.9"
+VERSION = "2.2.10"
 KEY = "__ccSwitchDroidHook"
 
 
@@ -107,7 +107,6 @@ class RendererHooks:
         self.state = state
         self.pages = {}
         self.ever_ready = False
-        self.last_ready_at = time.monotonic()
         self.last_failure = None
         self.retry_after = {}
         raw = "\n".join(
@@ -169,8 +168,15 @@ class RendererHooks:
                 self.last_failure = message
         if commands["ready"]:
             self.ever_ready = True
-            self.last_ready_at = time.monotonic()
         return commands
+
+    def reset_connections(self):
+        # Resume needs fresh transports, not duplicate scripts or lost command acknowledgements.
+        for page in self.pages.values():
+            page.disconnect()
+            page.failures = 0
+        self.retry_after.clear()
+        self.last_failure = None
 
     def close(self):
         try:

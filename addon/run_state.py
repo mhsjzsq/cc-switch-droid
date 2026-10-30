@@ -17,7 +17,7 @@ class RunState:
         self.path = launches / f"{launch_id}.json"
         self.owns_session = False
         self.data = {
-            "version": "2.2.9", "launchId": launch_id, "helperPid": os.getpid(),
+            "version": "2.2.10", "launchId": launch_id, "helperPid": os.getpid(),
             "state": "starting", "startedAt": self.now(),
         }
 

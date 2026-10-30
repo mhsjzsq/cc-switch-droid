@@ -72,7 +72,7 @@ def _get(base, route, key, timeout=12):
             "Origin": APP,
             "Referer": APP + "/",
             "x-factory-client": "web-app",
-            "User-Agent": "CC-Switch-Droid-Hook/2.2.9",
+            "User-Agent": "CC-Switch-Droid-Hook/2.2.10",
         },
     )
     try:

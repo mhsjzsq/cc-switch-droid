@@ -6,7 +6,7 @@ A Windows extension that adds a Droid page, Factory quota information, and local
 
 Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for that session. The project includes a Python runtime and does not require a system Python installation or the old Addon directory.
 
-**Current version: 2.2.9** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
+**Current version: 2.2.10** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
 
 ## Features
 
@@ -175,7 +175,7 @@ Removing the project does not delete existing Droid usage records or helper tabl
 
 Runtime status is stored in `data/status.json` and `data/launches/`. Diagnostic output is written to `data/hook.log`, which rotates to `hook.previous.log` at approximately 1 MB.
 
-If a connection interruption lasts more than 15 seconds, the helper exits and reports the problem while leaving the original application window open. The debugging port closes when the original application process exits. Changes to the application's interface or database in future releases may require integration updates.
+The helper retries after the first connection failure and exits with an error if recovery takes more than 15 seconds, leaving the original application window open. This budget excludes system sleep and hibernation. After detecting resume, the helper closes old connections, clears retry backoff, and grants a fresh recovery window. Resume during initial attachment also restarts the configured `startupTimeoutSeconds` window. The debugging port closes when the original application process exits. Changes to the application's interface or database in future releases may require integration updates.
 
 ## Project structure
 

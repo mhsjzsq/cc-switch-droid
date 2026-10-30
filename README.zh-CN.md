@@ -6,7 +6,7 @@
 
 通过 `Open-Hook.cmd` 启动原版 CC Switch，并为这次运行加载 Hook。项目自带 Python 运行环境，无需安装系统 Python，也不依赖旧版 Addon 目录。
 
-**当前版本：2.2.9** · [修改记录](CHANGELOG.md) · [配置模板](config.example.json) · [许可证](LICENSE)
+**当前版本：2.2.10** · [修改记录](CHANGELOG.md) · [配置模板](config.example.json) · [许可证](LICENSE)
 
 ## 功能
 
@@ -175,7 +175,7 @@ Open-Hook.cmd
 
 运行状态保存在 `data/status.json` 和 `data/launches/`，诊断日志为 `data/hook.log`，约 1 MB 后轮换为 `hook.previous.log`。
 
-连接持续中断超过 15 秒时，助手会退出并提示，原版窗口保留。调试端口随原版进程退出而关闭。原版升级后若改变界面或数据库结构，需要更新适配代码。
+连接首次失败后，助手会尝试重连；超过 15 秒仍未恢复时退出并提示，原版窗口保留。计时不包含系统睡眠或休眠时间，检测到唤醒后会关闭旧连接、清除退避等待并重新给予重连宽限期。初次启动期间唤醒也会重新给予 `startupTimeoutSeconds` 配置的等待时间。调试端口随原版进程退出而关闭。原版升级后若改变界面或数据库结构，需要更新适配代码。
 
 ## 项目结构
 

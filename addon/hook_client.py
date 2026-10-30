@@ -67,24 +67,38 @@ def run(state):
         try:
             service = DataService(cfg, state, lambda: child.poll() is None)
             hooks = RendererHooks(port, child, state)
-            deadline = time.monotonic() + cfg["startupTimeoutSeconds"]
+            recovery = ConnectionRecovery(cfg["startupTimeoutSeconds"])
             while child.poll() is None:
                 try:
                     commands = hooks.update(service.payload())
                 except (OSError, ValueError) as error:
                     hooks.last_failure = str(error)[:240]
                     commands = {"ready": False, "sync": False, "quota": False}
+                # Sample after I/O: the machine may have slept inside a CDP call.
+                now, suspended = recovery.observe()
+                if suspended:
+                    hooks.reset_connections()
+                    state.update("reconnecting" if hooks.ever_ready else "starting",
+                                 reason="系统已从睡眠恢复，正在重新连接 Hook")
+                    state.log("system_resumed", sleepSeconds=round(suspended, 3))
                 if commands["ready"]:
+                    recovery.disconnected_since = None
                     if state.data["state"] != "attached":
                         state.update("attached", reason=None, everAttached=True)
                         state.log("hook_attached", clientPid=child.pid)
                     service.request(sync=commands["sync"], quota=commands["quota"])
                 elif hooks.ever_ready:
+                    if recovery.disconnected_since is None:
+                        recovery.disconnected_since = now
                     if state.data["state"] != "reconnecting":
                         state.update("reconnecting", reason=hooks.last_failure)
-                    if time.monotonic() - hooks.last_ready_at > 15:
-                        raise RuntimeError("Hook 连接已中断超过 15 秒；原版窗口保留，请完整退出后重新使用启动入口")
-                elif time.monotonic() > deadline:
+                        state.log("hook_reconnecting", reason=hooks.last_failure)
+                    if now - recovery.disconnected_since > 15:
+                        raise RuntimeError(
+                            "Hook 连接失败后重连超过 15 秒仍未恢复（不含睡眠时间）；"
+                            "原版窗口保留，请完整退出后重新使用启动入口"
+                        )
+                elif now > recovery.startup_deadline:
                     raise RuntimeError(
                         "未能在限定时间内连接并加载 Droid Hook，可能是 WebView2 接口或页面不兼容。"
                         "原版窗口保留；详情见 data/hook.log。"
@@ -108,6 +122,27 @@ def run(state):
         state.update("stopped")
         state.log("session_stopped")
     return 0
+
+
+class ConnectionRecovery:
+    """Connection budgets count awake time; each resume grants a fresh budget."""
+
+    def __init__(self, startup_timeout):
+        now, self.sleep_seconds = windows.power_clock()
+        self.startup_timeout = startup_timeout
+        self.startup_deadline = now + startup_timeout
+        self.disconnected_since = None
+
+    def observe(self):
+        now, sleep_seconds = windows.power_clock()
+        suspended = sleep_seconds - self.sleep_seconds
+        # The two clock reads can straddle a tick; tolerate sampling skew.
+        if suspended <= 0.25:
+            return now, 0
+        self.sleep_seconds = sleep_seconds
+        self.startup_deadline = now + self.startup_timeout
+        self.disconnected_since = None
+        return now, suspended
 
 
 def main():

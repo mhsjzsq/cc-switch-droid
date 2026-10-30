@@ -36,11 +36,24 @@ kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
 kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
 kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
 kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
+kernel32.GetTickCount64.argtypes = ()
+kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+kernel32.QueryUnbiasedInterruptTime.argtypes = (ctypes.POINTER(ctypes.c_ulonglong),)
+kernel32.QueryUnbiasedInterruptTime.restype = wintypes.BOOL
 iphlpapi.GetExtendedTcpTable.argtypes = (
     wintypes.LPVOID, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
     wintypes.ULONG, ctypes.c_int, wintypes.ULONG,
 )
 iphlpapi.GetExtendedTcpTable.restype = wintypes.DWORD
+
+
+def power_clock():
+    """Return awake seconds and accumulated sleep seconds, independent of wall time."""
+    elapsed = kernel32.GetTickCount64() / 1000
+    awake = ctypes.c_ulonglong()
+    if not kernel32.QueryUnbiasedInterruptTime(ctypes.byref(awake)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return awake.value / 10_000_000, elapsed - awake.value / 10_000_000
 
 
 def show_error(message):
