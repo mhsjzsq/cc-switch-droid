@@ -116,6 +116,17 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.sync().inserted, 2)
         self.assertEqual(self.rows("SELECT SUM(cost_known) FROM droid_addon_records"), [(0,)])
 
+    def test_display_only_messages_do_not_hide_transcript_model(self):
+        self.write_session()
+        with (self.sessions / "s1.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write("\n" + json.dumps({"type": "message", "message": {
+                "role": "assistant", "visibility": "user_only", "userMessageSource": "desktop",
+                "content": [{"type": "tool_use", "name": "Read", "script_execution": {}}],
+            }}))
+        self.sync()
+        self.assertEqual(self.rows("SELECT request_model FROM proxy_request_logs"), [("model-a",)])
+        self.assertEqual(self.rows("SELECT model_quality,cost_known FROM droid_addon_records"), [("single", 1)])
+
     def test_invalid_snapshot_and_cross_day_import_are_unallocated(self):
         self.write_session()
         self.sync()

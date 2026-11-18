@@ -156,6 +156,10 @@ def _session_model(path, cancelled):
                         continue
                     if message.get("role") != "assistant":
                         continue
+                    # Desktop writes display-only copies of nested Script tool calls
+                    # without modelId; they are not model output.
+                    if message.get("visibility") == "user_only":
+                        continue
                     model = message.get("modelId")
                     if (isinstance(model, str) and model.strip()
                             and model.strip().lower() not in {"auto", "unknown", "default"}):
