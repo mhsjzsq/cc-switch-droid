@@ -1,7 +1,7 @@
 """Reconcile cumulative counters against rows in the destination database.
 
-Imported rows are the accounting checkpoint. Attribution metadata and sampling
-snapshots commit in the SAME SQLite transaction. sync_state.json is not read.
+Detailed rows and per-session snapshots commit in the same transaction. The
+snapshots preserve accounted totals after CC Switch rolls up older details.
 """
 
 import json
@@ -248,20 +248,13 @@ def _repair_costs(conn, prices, cancelled):
     return count
 
 
-def _previous_snapshot(row, accounted):
-    if row is None:
-        return None
+def _sample_time(observed):
     try:
-        totals, observed = row
         if (isinstance(observed, bool) or not isinstance(observed, (int, float))
                 or not math.isfinite(observed) or observed <= 0):
             return None
         datetime.fromtimestamp(observed)  # Reject timestamps unsupported on this platform.
-        values = json.loads(totals)
-        if (not isinstance(values, list) or len(values) != len(FIELDS)
-                or any(type(n) is not int or n < 0 for n in values)):
-            return None
-        return observed if tuple(values) == accounted else None
+        return observed
     except (TypeError, ValueError, OverflowError, OSError):
         return None
 
@@ -305,7 +298,7 @@ def _insert(conn, sid, delta, model, model_quality, time_quality, prices, now, s
     )
 
 
-def _imported_totals(conn, cancelled=None):
+def _accounting_state(conn, cancelled=None):
     # SQLite SUM can overflow on duplicated/corrupt historic counters. Accumulate
     # Python integers, and quarantine invalid sessions without blocking others.
     totals = {}
@@ -319,7 +312,38 @@ def _imported_totals(conn, cancelled=None):
             totals[sid] = None
         else:
             totals[sid] = tuple(a + b for a, b in zip(old, counts))
-    return totals
+    observations = {}
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, 'usage_daily_rollups')",
+        (SNAPSHOT_TABLE,),
+    )}
+    if SNAPSHOT_TABLE not in tables:
+        return totals, observations
+    archived = "usage_daily_rollups" in tables and conn.execute(
+        "SELECT 1 FROM usage_daily_rollups WHERE app_type=? LIMIT 1", (APP_TYPE,)
+    ).fetchone() is not None
+    for sid, raw, observed in conn.execute(f"SELECT session_id,totals_json,observed_at FROM {SNAPSHOT_TABLE}"):
+        _check_cancelled(cancelled)
+        detail = totals.get(sid, (0, 0, 0, 0))
+        if detail is None:
+            continue
+        try:
+            saved = json.loads(raw)
+            if (not isinstance(saved, list) or len(saved) != len(FIELDS)
+                    or any(type(n) is not int or not 0 <= n < 2**63 for n in saved)):
+                raise ValueError("invalid counters")
+        except (TypeError, ValueError):
+            if archived:
+                totals[sid] = None
+            continue
+        saved = tuple(saved)
+        if archived and any(a > b for a, b in zip(saved, detail)):
+            # Rollups retain no session ID. Its own committed snapshot is the
+            # baseline for this session. Conflicting counters need review.
+            totals[sid] = saved if all(a >= b for a, b in zip(saved, detail)) else None
+        if saved == totals.get(sid, detail):
+            observations[sid] = _sample_time(observed)
+    return totals, observations
 
 
 def sync(sessions_dir, db_path, *, cancelled=None, timings=(), model_requests=()):
@@ -335,7 +359,7 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=(), model_requests=()
     conn = connect(db_path)
     try:
         # Read large transcripts before taking SQLite's writer lock.
-        preliminary = _imported_totals(conn, cancelled)
+        preliminary, _ = _accounting_state(conn, cancelled)
         models = {}
         for sid, (path, totals, sampled_at) in sources.items():
             _check_cancelled(cancelled)
@@ -347,25 +371,20 @@ def sync(sessions_dir, db_path, *, cancelled=None, timings=(), model_requests=()
         _check_cancelled(cancelled)
         _ensure_schema(conn)
         # Re-read while holding the lock: another writer may have changed rows.
-        imported = _imported_totals(conn, cancelled)
-        snapshots = {
-            r[0]: r[1:] for r in conn.execute(
-                f"SELECT session_id,totals_json,observed_at FROM {SNAPSHOT_TABLE}"
-            )
-        }
+        imported, observations = _accounting_state(conn, cancelled)
         prices = load_pricing(conn)
         for sid, (path, totals, sampled_at) in sources.items():
             _check_cancelled(cancelled)
             accounted = imported.get(sid, (0, 0, 0, 0))
             if accounted is None:
-                result.warnings.append(f"会话 {sid} 的已导入 Token 数据无效，保留原记录并跳过该会话")
+                result.warnings.append(f"会话 {sid} 的已导入 Token 明细或累计快照无效或冲突，保留原记录并跳过该会话")
                 continue
             if any(cur < old for cur, old in zip(totals, accounted)):
                 result.warnings.append(
                     f"会话 {sid} 的累计值低于已导入值，可能回滚或旧版重复；保留原记录，等待核对"
                 )
                 continue
-            previous = _previous_snapshot(snapshots.get(sid), accounted)
+            previous = observations.get(sid)
             delta = tuple(cur - old for cur, old in zip(totals, accounted))
             if any(delta):
                 bounded_today = (

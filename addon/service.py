@@ -69,10 +69,8 @@ class DataService:
             if not isinstance(enabled, bool):
                 raise ValueError("自动扫描开关必须是布尔值")
             milliseconds = value.get("usageDashboardRefreshIntervalMs")
-            interval = (
-                max(2, milliseconds / 1000)
-                if type(milliseconds) is int and 0 < milliseconds <= 86_400_000 else 60
-            )
+            # Same presets and fallback as the native usage dashboard.
+            interval = milliseconds // 1000 if milliseconds in (5000, 10000, 30000, 60000) else 60
             if enabled and (not self.auto_sync or interval != self.scan_interval):
                 self.next_sync = 0
             self.auto_sync, self.scan_interval = enabled, interval

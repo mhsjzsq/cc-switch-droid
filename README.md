@@ -6,7 +6,7 @@ A Windows extension that adds a Droid page, Factory quota information, and local
 
 Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for that session. The project includes a Python runtime and does not require a system Python installation or the old Addon directory.
 
-**Current version: 2.2.11** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
+**Current version: 2.2.12** · [Changelog (Chinese)](CHANGELOG.md) · [Configuration template](config.example.json) · [License](LICENSE)
 
 ## Features
 
@@ -17,7 +17,7 @@ Launch the unmodified CC Switch through `Open-Hook.cmd` to load the Hook for tha
 - **First-run setup**: Select the CC Switch directory, enter a Factory API key, and continue launching after saving.
 - **Settings backup**: Save a copy of CC Switch's device settings before launch and stop if the JSON is damaged.
 
-The current integration uses CC Switch 4.0.12 as its compatibility reference, with the app-filter adapter updated and checked offline against the 4.0.17 source. It depends on the application's interface and database structure, so other versions may require changes. See the [changelog](CHANGELOG.md) for the validation scope of recent changes.
+The sidebar, usage filters, request log and sync integration were reviewed against the CC Switch 4.0.40 source. This update received static review only. See the [changelog](CHANGELOG.md) for details.
 
 ## Quick start
 
@@ -80,8 +80,8 @@ Droid usage synchronization and Factory quota queries run as separate tasks.
 | --- | --- |
 | Launch and connect the Hook | Run an initial Droid usage sync when native automatic scanning is enabled. |
 | Native automatic scanning toggle | Follow `sessionAutoSyncEnabled`; disabling it stops scheduling automatic scans while keeping manual sync available. |
-| CC Switch's “Scan every N seconds” setting | Read `usageDashboardRefreshIntervalMs` from `~/.cc-switch/settings.json`, independently of the database directory. Missing, invalid, or longer-than-one-day intervals fall back to 60 seconds; the minimum is 2 seconds. |
-| “Sync now” in the header, empty state, or data sources dialog | Also request a Droid sync. |
+| CC Switch's “Scan every N seconds” setting | Read `usageDashboardRefreshIntervalMs` from `~/.cc-switch/settings.json`. The native presets are 5, 10, 30 and 60 seconds. Other values fall back to 60 seconds. |
+| Session sync on the usage page | Also request a Droid sync from the header (including when it shows the last sync time), the empty state or Usage Settings. |
 | “Refresh now” on the Droid page | Refresh Factory quota information. |
 | `quotaRefreshSeconds` | Control quota queries only, independently of the native scanning dropdown. |
 
@@ -98,7 +98,7 @@ The usage dashboard's Droid icon uses the same app-filter state as native app bu
 
 **Imported records represent changes in cumulative session usage, rather than individual request bills. Conversation text is not imported into CC Switch's native Sessions page.** One record may cover several responses and should not be counted as one actual request.
 
-- **Usage consistency**: Compare cumulative counts against previously imported totals and save usage changes and sampling information in one transaction. Decreasing counters, duplicate session IDs, or incomplete reads are skipped or reported.
+- **Usage consistency**: Save usage changes and per-session cumulative snapshots in one transaction. After CC Switch rolls old details into daily aggregates, the session's committed snapshot establishes the baseline for further imports. Decreasing counters, conflicting snapshots, duplicate session IDs and incomplete reads are skipped or reported.
 - **Date attribution**: Initial imports, changes spanning multiple days, and imports without reliable sampling boundaries are marked as having an unallocated date. The Droid page's daily totals only include changes whose two samples fall within the current day.
 - **Model identification**: Prefer actual transcript model IDs over later configuration changes. Missing assistant messages can be supplemented by a uniquely matched completed request within a trusted sample, explicitly labeled as inferred. Model inference alone does not backfill costs or timings. A separate reconciliation can estimate costs when subtracting all main-request token counters from the cumulative session counters leaves exactly the unpriced record and uniquely identifies a successful title request. These records are labeled `Token对账` (token reconciliation), without backfilling timings. This repair is separate from routine automatic model inference. Aggregates involving multiple models remain mixed rather than assigning all tokens to the main model.
 - **Cost attribution**: Estimate costs only when model evidence is complete and the database contains an exact pricing match. Daily costs show the known subtotal with explanations for unpriced records, or an unavailable estimate when none can be priced. Subsequent syncs backfill unpriced single-model records using the current database's exact valid pricing match, even without new tokens. Sessions using multiple models are not assigned entirely to the last model. These local price-table estimates do not represent Factory subscription quota deductions or actual bills.

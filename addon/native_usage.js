@@ -113,7 +113,7 @@ function createNativeUsageBridge() {
         : 'all',
       selected: props['aria-pressed'],
     }));
-    if (apps.length < 2 || apps.some((app) => !app.value)
+    if (apps.some((app) => !app.value)
         || apps.filter((app) => app.value === 'all').length !== 1) return null;
     const hooks = stateHooks(fiber);
     const index = hooks.findIndex((hook) => hook.memoizedState === ranges[0].selection);
@@ -184,7 +184,8 @@ function createNativeUsageBridge() {
       const cells = [];
       for (let column = row.child; column; column = column.sibling) {
         if (!['speed', 'firstToken'].includes(column.key)) continue;
-        const cell = column.child;
+        // 4.0.40 keys the td itself; earlier tables keyed a wrapping fragment.
+        const cell = column.type === 'td' ? column : column.child;
         if (cell?.type !== 'td' || !table.contains(cell.stateNode)) continue;
         cells.push({ element: cell.stateNode, column: column.key, log: logs[index],
           nativeTitle: cell.memoizedProps.title ?? null });
@@ -193,5 +194,13 @@ function createNativeUsageBridge() {
     });
   }
 
-  return { resolve, requestTimingCells };
+  function isSessionSyncButton(button) {
+    const path = committedPath(button);
+    const onClick = path?.[0].memoizedProps.onClick;
+    // The UsageSettingsSheet forwards its onSyncNow handler to this button.
+    // The pricing sync button in the same sheet has a different handler.
+    return typeof onClick === 'function' && path.some((fiber) => fiber.memoizedProps?.onSyncNow === onClick);
+  }
+
+  return { resolve, requestTimingCells, isSessionSyncButton };
 }
